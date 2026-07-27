@@ -5,10 +5,11 @@ import threading
 import time
 
 import numpy as np
-from geometry_msgs.msg import Pose, PoseStamped
+from geometry_msgs.msg import Pose, PoseStamped, TransformStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_srvs.srv import SetBool
+from tf2_ros import TransformBroadcaster
 
 
 class EefStreamingController:
@@ -17,6 +18,8 @@ class EefStreamingController:
     def __init__(self, node, hardware, namespace: str) -> None:
         self._node = node
         self._hardware = hardware
+        self._frame_id = str(node.get_parameter("frame_id").value)
+        self._target_tf_broadcaster = TransformBroadcaster(node)
         self._lock = threading.Lock()
         self._control_group = MutuallyExclusiveCallbackGroup()
         self._active = False
@@ -100,6 +103,18 @@ class EefStreamingController:
         with self._lock:
             self._latest_target = target
             self._latest_target_time = time.monotonic()
+        transform = TransformStamped()
+        transform.header.stamp = self._node.get_clock().now().to_msg()
+        transform.header.frame_id = self._frame_id
+        transform.child_frame_id = "eef_target"
+        transform.transform.translation.x = float(target[0])
+        transform.transform.translation.y = float(target[1])
+        transform.transform.translation.z = float(target[2])
+        transform.transform.rotation.x = float(target[3])
+        transform.transform.rotation.y = float(target[4])
+        transform.transform.rotation.z = float(target[5])
+        transform.transform.rotation.w = float(target[6])
+        self._target_tf_broadcaster.sendTransform(transform)
 
     def _enable_callback(self, request, response):
         if request.data:
