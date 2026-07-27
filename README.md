@@ -314,6 +314,12 @@ Its limits are ROS parameters under `eef_streaming.*`. Set
 `workspace_min/max` for the real installation before operating hardware; the
 defaults are conservative examples, not calibrated workspace limits.
 
+Streaming IK has a dedicated `eef_streaming.ik_max_iter` budget, set to `20`
+by default because every solve is warm-started from the previous joint
+command. The SDK solver returns immediately after reaching its configured
+tolerance, while endpoint IK used by `move_to_pose` retains its separate
+`200`-iteration upper bound.
+
 3. Close the gripper and return to safe home:
 
 ```bash

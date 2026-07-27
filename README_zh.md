@@ -298,6 +298,10 @@ ros2 service call /rebotarm/eef_streaming/enable std_srvs/srv/SetBool "{data: fa
 限制参数位于 `eef_streaming.*`。真机运行前必须根据实际安装环境配置
 `workspace_min/max`；默认值只是保守示例，不是已标定的工作空间。
 
+streaming IK 使用独立的 `eef_streaming.ik_max_iter` 预算。默认值为 `20`，因为每次
+求解都会以上一周期的关节命令作为 warm start。SDK IK 达到配置的 tolerance 后会立即
+返回，而 `move_to_pose` 使用的终点 IK 仍保留独立的 `200` 次迭代上限。
+
 3. 闭合夹爪并回到安全零位：
 
 ```bash
