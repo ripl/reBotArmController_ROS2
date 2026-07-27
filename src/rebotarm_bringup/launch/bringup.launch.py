@@ -14,6 +14,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     bringup_share = FindPackageShare("rebotarm_bringup")
+    driver_params = PathJoinSubstitution([bringup_share, "config", "driver_params.yaml"])
     hardware_config = LaunchConfiguration("hardware_config")
     model = LaunchConfiguration("model")
     channel = LaunchConfiguration("channel")
@@ -66,6 +67,7 @@ def generate_launch_description():
                 output="screen",
                 on_exit=Shutdown(reason="reBotArmController exited"),
                 parameters=[
+                    driver_params,
                     {
                         "hardware_config": hardware_config,
                         "model": model,

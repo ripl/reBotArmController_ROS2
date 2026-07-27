@@ -274,6 +274,30 @@ ros2 action send_goal /rebotarm/move_to_pose rebotarm_msgs/action/MoveToPose \
 `move_to_pose` action 通过 SDK 末端控制器执行。机械臂控制模式由
 `rebotarm_hardware.yaml` 决定：DM 默认 `posvel`，RS 默认 `mit`。
 
+## 流式末端 Pose 控制
+
+`/rebotarm/eef_target_pose` 接收 `geometry_msgs/msg/PoseStamped` 的最新目标。
+目标必须已经是机械臂基坐标系下的 pose；controller 不做 TF 转换。它不包含
+teleop 逻辑，上游可以是 VR、键盘或 policy 节点。
+
+先使能，再持续发布目标：
+
+```bash
+ros2 service call /rebotarm/eef_streaming/enable std_srvs/srv/SetBool "{data: true}"
+ros2 topic pub -r 50 /rebotarm/eef_target_pose geometry_msgs/msg/PoseStamped \
+  "{pose: {position: {x: 0.30, y: 0.0, z: 0.30}, orientation: {w: 1.0}}}"
+```
+
+controller 只保留最新 pose，并限制笛卡尔和关节目标增量。目标超时或 IK 解不安全时，
+机械臂会保持当前位置。使用轨迹 action 或 raw joint command 前，应显式停用：
+
+```bash
+ros2 service call /rebotarm/eef_streaming/enable std_srvs/srv/SetBool "{data: false}"
+```
+
+限制参数位于 `eef_streaming.*`。真机运行前必须根据实际安装环境配置
+`workspace_min/max`；默认值只是保守示例，不是已标定的工作空间。
+
 3. 闭合夹爪并回到安全零位：
 
 ```bash

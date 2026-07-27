@@ -286,6 +286,34 @@ ros2 action send_goal /rebotarm/move_to_pose rebotarm_msgs/action/MoveToPose \
 mode is selected by `rebotarm_hardware.yaml`: DM defaults to `posvel`, RS
 defaults to `mit`.
 
+## Streaming End-effector Pose Control
+
+`/rebotarm/eef_target_pose` accepts the latest target as
+`geometry_msgs/msg/PoseStamped`. Targets must already be expressed in the
+robot base frame; the controller does not perform TF transforms. It is source
+agnostic and can be driven by a teleoperation node, keyboard node, or policy.
+
+Enable it before publishing a continuous target stream:
+
+```bash
+ros2 service call /rebotarm/eef_streaming/enable std_srvs/srv/SetBool "{data: true}"
+ros2 topic pub -r 50 /rebotarm/eef_target_pose geometry_msgs/msg/PoseStamped \
+  "{pose: {position: {x: 0.30, y: 0.0, z: 0.30}, orientation: {w: 1.0}}}"
+```
+
+The controller keeps only the latest pose, limits Cartesian and joint target
+increments, and holds position when the stream times out or the target has no
+safe IK solution. Disable it explicitly before using trajectory actions or raw
+joint command topics:
+
+```bash
+ros2 service call /rebotarm/eef_streaming/enable std_srvs/srv/SetBool "{data: false}"
+```
+
+Its limits are ROS parameters under `eef_streaming.*`. Set
+`workspace_min/max` for the real installation before operating hardware; the
+defaults are conservative examples, not calibrated workspace limits.
+
 3. Close the gripper and return to safe home:
 
 ```bash

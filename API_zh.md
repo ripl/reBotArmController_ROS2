@@ -21,6 +21,7 @@
 |---|---|---|---|
 | Topic | `/rebotarm/joint_states` | `sensor_msgs/msg/JointState` | 6 轴关节状态 |
 | Topic | `/rebotarm/arm_status` | `rebotarm_msgs/msg/ArmStatus` | controller 状态机和健康状态 |
+| Topic | `/rebotarm/eef_target_pose` | `geometry_msgs/msg/PoseStamped` | 流式末端目标位姿 |
 | Topic | `/rebotarm/joints/<joint>/state` | `rebotarm_msgs/msg/JointMotorState` | 单关节电机状态 |
 | Topic | `/rebotarm/gripper/state` | `rebotarm_msgs/msg/JointMotorState` | 夹爪电机状态 |
 | Service | `/rebotarm/enable` | `std_srvs/srv/Trigger` | 使能机械臂 |
@@ -29,6 +30,7 @@
 | Service | `/rebotarm/set_mode` | `rebotarm_msgs/srv/SetMode` | 切换底层控制模式 |
 | Service | `/rebotarm/set_zero` | `rebotarm_msgs/srv/SetZero` | 设置关节零点 |
 | Service | `/rebotarm/move_to_pose_ik` | `rebotarm_msgs/srv/MoveToPoseIK` | IK 预检查和目标关节角求解 |
+| Service | `/rebotarm/eef_streaming/enable` | `std_srvs/srv/SetBool` | 启停流式末端位姿控制 |
 | Service | `/rebotarm/gripper/set` | `rebotarm_msgs/srv/SetGripper` | 设置夹爪电机位置 |
 | Service | `/rebotarm/gripper/open` | `rebotarm_msgs/srv/GripperCommand` | 打开夹爪到指定或默认位置 |
 | Service | `/rebotarm/gripper/close` | `rebotarm_msgs/srv/GripperCommand` | 闭合夹爪到指定或默认位置 |
@@ -119,10 +121,29 @@ offering incompatible QoS. Last incompatible policy: RELIABILITY
 |---|---|
 | `IDLE` | 空闲或位置保持 |
 | `TRAJ_RUNNING` | 正在执行轨迹 action |
+| `EEF_STREAMING` | 正在跟踪流式末端位姿目标 |
 | `LOWLEVEL_STREAMING` | 收到过低层 raw command |
 | `GRAVITY_COMP` | controller 内部重力补偿运行中 |
 
 ## 2. Topic API
+
+### `/rebotarm/eef_target_pose`
+
+类型：
+
+```text
+geometry_msgs/msg/PoseStamped
+```
+
+说明：流式末端位姿目标。输入 pose 必须已经处于 `base_link` 坐标系；controller 不进行 TF
+转换。该接口只消费目标位姿，不包含 teleop 逻辑，可由 VR、键盘或 policy 发布。
+
+controller 仅保留最新消息，在固定频率下完成 EEF/关节增量限幅、IK 和关节目标更新。目标
+超时、越过配置工作空间或 IK 不安全时会保持当前位置并停止 streaming。使用前先调用：
+
+```bash
+ros2 service call /rebotarm/eef_streaming/enable std_srvs/srv/SetBool "{data: true}"
+```
 
 ### `/rebotarm/joint_states`
 

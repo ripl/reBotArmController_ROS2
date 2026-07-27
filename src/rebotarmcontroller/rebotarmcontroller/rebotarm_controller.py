@@ -7,6 +7,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from .hardware_manager import HardwareManager
+from .eef_streaming_controller import EefStreamingController
 from .motor_passthrough import MotorPassthrough
 from .ros_actions import ArmActions
 from .ros_publishers import JointStatePublisher
@@ -30,6 +31,17 @@ class reBotArmController(Node):
         self.declare_parameter("frame_id", "base_link")
         self.declare_parameter("ee_frame_id", "end_link")
         self.declare_parameter("disable_after_safe_home", True)
+        self.declare_parameter("eef_streaming.control_rate_hz", 50.0)
+        self.declare_parameter("eef_streaming.target_timeout", 0.2)
+        self.declare_parameter("eef_streaming.max_linear_velocity", 0.10)
+        self.declare_parameter("eef_streaming.max_angular_velocity", 0.60)
+        self.declare_parameter(
+            "eef_streaming.joint_velocity_limits",
+            [0.4, 0.4, 0.4, 0.6, 0.6, 0.6],
+        )
+        self.declare_parameter("eef_streaming.workspace_min", [0.15, -0.35, 0.05])
+        self.declare_parameter("eef_streaming.workspace_max", [0.55, 0.35, 0.55])
+        self.declare_parameter("eef_streaming.joint_limit_margin", 0.05)
 
         hardware_config = self.get_parameter("hardware_config").value or None
         model = str(self.get_parameter("model").value or "")
@@ -61,6 +73,11 @@ class reBotArmController(Node):
         )
         self.arm_services = ArmServices(self, self.hardware, self.arm_namespace)
         self.arm_actions = ArmActions(self, self.hardware, self.arm_namespace)
+        self.eef_streaming = EefStreamingController(
+            self,
+            self.hardware,
+            self.arm_namespace,
+        )
         self.motor_passthrough = MotorPassthrough(
             self,
             self.hardware,

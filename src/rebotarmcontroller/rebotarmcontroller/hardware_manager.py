@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from .conversions import fk_to_pose
+from .conversions import fk_to_pose, pose_to_xyz_rpy
 from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
@@ -45,10 +45,14 @@ class HardwareManager:
             compute_fk,
             load_robot_model,
             pad_q_for_model,
+            pos_rot_to_se3,
+            solve_ik,
         )
 
         self._compute_fk = compute_fk
         self._pad_q_for_model = pad_q_for_model
+        self._pos_rot_to_se3 = pos_rot_to_se3
+        self._solve_ik = solve_ik
 
         runtime_config = hardware_data["_runtime"]
         control_runtime = runtime_config["control"]
@@ -80,6 +84,14 @@ class HardwareManager:
 
         self._gc_model = load_robot_model()
         self._gc_data = self._gc_model.createData()
+        self._joint_lower_limits = np.asarray(
+            self._gc_model.lowerPositionLimit[: len(self.joint_names)],
+            dtype=np.float64,
+        )
+        self._joint_upper_limits = np.asarray(
+            self._gc_model.upperPositionLimit[: len(self.joint_names)],
+            dtype=np.float64,
+        )
         self._gc_compute_generalized_gravity = compute_generalized_gravity
         gc_runtime = runtime_config["gravity_compensation"]
         self._gravity_comp_kp = np.array(gc_runtime["kp"], dtype=np.float64)
@@ -140,6 +152,7 @@ class HardwareManager:
             "IDLE",
             "TRAJ_RUNNING",
             "LOWLEVEL_STREAMING",
+            "EEF_STREAMING",
             "GRAVITY_COMP",
             "SAFE_HOMING",
         ):
@@ -235,6 +248,8 @@ class HardwareManager:
             raise RuntimeError("stop gravity compensation before starting endpos control")
         if self._state_machine in ("SAFE_HOMING", "TRAJ_RUNNING"):
             raise RuntimeError(f"rejecting endpos control in state {self._state_machine}")
+        if self._state_machine == "EEF_STREAMING":
+            return
 
         if self.control_loop_active:
             self.set_state_machine("IDLE")
@@ -363,13 +378,24 @@ class HardwareManager:
 
     def current_pose(self):
         q, _, _ = self.get_joint_state()
+        return self.pose_from_joint_positions(q)
+
+    @_locked
+    def pose_from_joint_positions(self, positions):
+        q = np.asarray(positions, dtype=np.float64).reshape(-1)
+        if len(q) != len(self.joint_names):
+            raise ValueError(f"expected {len(self.joint_names)} joint positions")
         q_padded = self._pad_q_for_model(self._gc_model, q, len(self.joint_names))
         position, rotation, _ = self._compute_fk(self._gc_model, q_padded)
         return fk_to_pose(position, rotation)
 
+    @property
+    def joint_position_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._joint_lower_limits.copy(), self._joint_upper_limits.copy()
+
     def _require_idle(self, what: str) -> None:
         state = self._state_machine
-        if state in ("TRAJ_RUNNING", "GRAVITY_COMP", "SAFE_HOMING"):
+        if state in ("TRAJ_RUNNING", "EEF_STREAMING", "GRAVITY_COMP", "SAFE_HOMING"):
             raise RuntimeError(f"rejecting {what} in state {state}")
 
     @_locked
@@ -399,6 +425,66 @@ class HardwareManager:
         ok = self._endpos_ctrl.move_to_ik(x, y, z, roll, pitch, yaw)
         return bool(ok), [float(v) for v in self._endpos_ctrl._q_target]
 
+    @_locked
+    def begin_eef_streaming(self) -> np.ndarray:
+        if self._state_machine != "IDLE":
+            raise RuntimeError(
+                f"rejecting EEF streaming in state {self._state_machine}"
+            )
+        self.start_endpos_control()
+        self._endpos_ctrl._vlim_override = None
+        self.set_state_machine("EEF_STREAMING")
+        return self.get_joint_positions(request=True).copy()
+
+    @_locked
+    def solve_eef_ik(self, pose, q_seed) -> np.ndarray | None:
+        if self._state_machine != "EEF_STREAMING":
+            raise RuntimeError("EEF streaming is not active")
+        x, y, z, roll, pitch, yaw = pose_to_xyz_rpy(pose)
+        q_padded = self._pad_q_for_model(
+            self._endpos_ctrl._model,
+            np.asarray(q_seed, dtype=np.float64),
+            len(self.joint_names),
+        )
+        target = self._pos_rot_to_se3(
+            np.array([x, y, z]),
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw,
+        )
+        result = self._solve_ik(
+            self._endpos_ctrl._model,
+            self._endpos_ctrl._data,
+            self._endpos_ctrl._end_frame_id,
+            target,
+            q_padded,
+            self._endpos_ctrl._ik_solver_params,
+            controlled_joints=len(self.joint_names),
+        )
+        if not result.success:
+            return None
+        return np.asarray(result.q[: len(self.joint_names)], dtype=np.float64)
+
+    @_locked
+    def set_eef_streaming_target(self, positions, velocity_limits) -> None:
+        if self._state_machine != "EEF_STREAMING":
+            raise RuntimeError("EEF streaming is not active")
+        q_target = np.asarray(positions, dtype=np.float64).reshape(-1)
+        vlim = np.asarray(velocity_limits, dtype=np.float64).reshape(-1)
+        if len(q_target) != len(self.joint_names) or len(vlim) != len(self.joint_names):
+            raise ValueError("streaming targets must match the arm joint count")
+        self._endpos_ctrl._q_target[:] = q_target
+        self._endpos_ctrl._qd_target[:] = 0.0
+        self._endpos_ctrl._vlim_override = vlim.copy()
+
+    @_locked
+    def stop_eef_streaming(self) -> None:
+        if self._state_machine != "EEF_STREAMING":
+            return
+        self.hold_current_position()
+        self._endpos_ctrl._vlim_override = None
+        self.set_state_machine("IDLE")
+
     def get_joint_status_codes(self) -> list[int]:
         codes: list[int] = []
         for name in self.joint_names:
@@ -415,7 +501,7 @@ class HardwareManager:
 
     @_locked
     def start_gravity_compensation(self) -> None:
-        if self._state_machine in ("TRAJ_RUNNING", "SAFE_HOMING"):
+        if self._state_machine in ("TRAJ_RUNNING", "EEF_STREAMING", "SAFE_HOMING"):
             raise RuntimeError(
                 f"rejecting gravity compensation in state {self._state_machine}"
             )
@@ -631,6 +717,8 @@ class HardwareManager:
             raise RuntimeError("rejecting low-level command while arm is disabled")
         if self._gravity_comp_active or self.state_machine == "GRAVITY_COMP":
             raise RuntimeError("rejecting low-level command during gravity compensation")
+        if self.state_machine == "EEF_STREAMING":
+            raise RuntimeError("rejecting low-level command during EEF streaming")
         if self.state_machine == "SAFE_HOMING":
             raise RuntimeError("rejecting low-level command during safe home")
         if self.state_machine == "TRAJ_RUNNING":
