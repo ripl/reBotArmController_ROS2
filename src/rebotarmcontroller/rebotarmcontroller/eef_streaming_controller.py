@@ -112,6 +112,9 @@ class EefStreamingController:
                 return response
             self._q_command = q_current
             self._pose_command = self._pose_to_array(pose_current)
+            with self._lock:
+                self._latest_target = None
+                self._latest_target_time = None
             self._active = True
             response.success = True
             response.message = "EEF streaming enabled"
