@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import functools
 import threading
 import time
@@ -30,6 +31,7 @@ class HardwareManager:
         hardware_config: str | None = None,
         model: str = "",
         channel: str = "",
+        eef_streaming_ik_max_iter: int = 20,
     ) -> None:
         self._cmd_lock = threading.RLock()
         hardware_config_path, hardware_data = resolve_hardware_config(
@@ -70,6 +72,14 @@ class HardwareManager:
         self._endpos_ctrl = RebotArmEndPose(
             self._robot,
             arm_control_mode=self._arm_control_mode,
+        )
+        if eef_streaming_ik_max_iter <= 0:
+            raise ValueError("eef streaming IK max_iter must be positive")
+        # Keep a separate iteration budget so streaming does not reduce the
+        # endpoint IK budget used by move_to_pose and move_to_pose_ik.
+        self._eef_streaming_ik_solver_params = replace(
+            self._endpos_ctrl._ik_solver_params,
+            max_iter=int(eef_streaming_ik_max_iter),
         )
 
         self._gripper_name = (
@@ -458,7 +468,7 @@ class HardwareManager:
             self._endpos_ctrl._end_frame_id,
             target,
             q_padded,
-            self._endpos_ctrl._ik_solver_params,
+            self._eef_streaming_ik_solver_params,
             controlled_joints=len(self.joint_names),
         )
         if not result.success:

@@ -33,6 +33,7 @@ class reBotArmController(Node):
         self.declare_parameter("disable_after_safe_home", True)
         self.declare_parameter("eef_streaming.control_rate_hz", 50.0)
         self.declare_parameter("eef_streaming.target_timeout", 0.2)
+        self.declare_parameter("eef_streaming.ik_max_iter", 20)
         self.declare_parameter("eef_streaming.max_linear_velocity", 0.10)
         self.declare_parameter("eef_streaming.max_angular_velocity", 0.60)
         self.declare_parameter(
@@ -46,6 +47,9 @@ class reBotArmController(Node):
         hardware_config = self.get_parameter("hardware_config").value or None
         model = str(self.get_parameter("model").value or "")
         channel = str(self.get_parameter("channel").value or "")
+        eef_streaming_ik_max_iter = int(
+            self.get_parameter("eef_streaming.ik_max_iter").value
+        )
         self.arm_namespace = str(self.get_parameter("arm_namespace").value or "rebotarm").strip("/")
         joint_state_rate = float(self.get_parameter("joint_state_rate").value)
         cmd_arbitration = str(self.get_parameter("cmd_arbitration").value or "reject")
@@ -62,6 +66,7 @@ class reBotArmController(Node):
             hardware_config=hardware_config,
             model=model,
             channel=channel,
+            eef_streaming_ik_max_iter=eef_streaming_ik_max_iter,
         )
         self.hardware.connect()
 

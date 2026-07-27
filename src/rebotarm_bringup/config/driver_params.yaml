@@ -10,9 +10,12 @@ reBotArmController:
     ee_frame_id: end_link
     eef_streaming.control_rate_hz: 50.0
     eef_streaming.target_timeout: 0.2
-    eef_streaming.max_linear_velocity: 0.80
+    # Streaming IK is warm-started, so it uses a smaller budget than action IK.
+    eef_streaming.ik_max_iter: 20
+    eef_streaming.max_linear_velocity: 0.20
     eef_streaming.max_angular_velocity: 0.60
-    eef_streaming.joint_velocity_limits: [0.4, 0.4, 0.4, 0.6, 0.6, 0.6]
+    # eef_streaming.joint_velocity_limits: [0.4, 0.4, 0.4, 0.6, 0.6, 0.6]
+    eef_streaming.joint_velocity_limits: [0.8, 0.8, 0.8, 1.2, 1.2, 1.2]
     eef_streaming.workspace_min: [0.15, -0.35, 0.05]
     eef_streaming.workspace_max: [0.55, 0.35, 0.55]
     eef_streaming.joint_limit_margin: 0.00
