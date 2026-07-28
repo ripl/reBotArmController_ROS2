@@ -22,7 +22,7 @@ def generate_launch_description():
             DeclareLaunchArgument("pose_timeout", default_value="0.5"),
             DeclareLaunchArgument(
                 "pose_filter_time_constant",
-                default_value="0.1",
+                default_value="0.02",
             ),
             Node(
                 package="rebotarm_phone_bridge",

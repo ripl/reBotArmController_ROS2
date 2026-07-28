@@ -23,6 +23,7 @@ setup(
             "GripperControl = rebotarmcontroller.examples.gripper_control:main",
             "MoveTo = rebotarmcontroller.examples.move_to:main",
             "MoveToPose = rebotarmcontroller.examples.move_to_pose:main",
+            "EefStreamingTest = rebotarmcontroller.examples.eef_streaming_test:main",
         ],
     },
 )

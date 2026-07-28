@@ -420,7 +420,6 @@ class HardwareManager:
         q, _, _ = self.get_joint_state()
         return self.pose_from_joint_positions(q)
 
-    @_locked
     def pose_from_joint_positions(self, positions):
         q = np.asarray(positions, dtype=np.float64).reshape(-1)
         if len(q) != len(self.joint_names):
@@ -476,10 +475,10 @@ class HardwareManager:
         self.set_state_machine("EEF_STREAMING")
         return self.get_joint_positions(request=True).copy()
 
-    @_locked
     def solve_eef_ik(self, pose, q_seed) -> np.ndarray | None:
-        if self._state_machine != "EEF_STREAMING":
-            raise RuntimeError("EEF streaming is not active")
+        with self._cmd_lock:
+            if self._state_machine != "EEF_STREAMING":
+                raise RuntimeError("EEF streaming is not active")
         x, y, z, roll, pitch, yaw = pose_to_xyz_rpy(pose)
         q_padded = self._pad_q_for_model(
             self._endpos_ctrl._model,
