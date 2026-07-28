@@ -351,7 +351,8 @@ base_link -> phone_ar_world -> phone_camera
 先用预览模式检查映射：
 
 ```bash
-ros2 launch rebotarm_phone_teleop phone_teleop.launch.py
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py \
+  command_enabled:=false
 ```
 
 bridge 标定完成且机械臂处于 `IDLE` 后，单击手机 Volume Up 开启/暂停 teleop。开启时
@@ -361,13 +362,32 @@ node 同时记录手机位置和 `base_link -> end_link`，随后使用：
 eef_target = initial_eef + position_scale * (phone - initial_phone)
 ```
 
-第一版只映射位置，EEF 姿态保持为开启瞬间的姿态。预览目标发布在
+手机在 base frame 下的相对旋转也会施加到开启瞬间的 EEF 姿态。预览目标发布在
 `/phone_teleop/eef_target_preview`，TF child frame 为
 `phone_teleop_eef_target`。确认 RViz 中的方向和尺度后再启用真机命令：
 
+```text
+R_delta = R_phone_current * inverse(R_phone_initial)
+R_eef_target = R_delta * R_eef_initial
+```
+
+```bash
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py
+```
+
+launch 默认参数为：
+
+```text
+command_enabled=true
+enable_orientation=true
+position_scale=0.8
+```
+
+只映射位置并保持初始 EEF 姿态时使用：
+
 ```bash
 ros2 launch rebotarm_phone_teleop phone_teleop.launch.py \
-  command_enabled:=true position_scale:=0.3
+  command_enabled:=true enable_orientation:=false
 ```
 
 真机模式会自动调用 `/rebotarm/eef_streaming/enable`，并以 50 Hz 发布
@@ -378,6 +398,10 @@ Volume Up，不会自动重启。
 真机模式启动后会先通过 `/rebotarm/move_to_pose` action，用 2 秒移动到
 `teleop_ready_pose`：位置 `(0.3, 0.0, 0.3)`，姿态 `(x=0, y=0, z=0, w=1)`。
 action 成功后才允许 Volume Up 开启 teleop。预览模式不会执行该动作。
+
+真机模式下，单击 Volume Down 切换夹爪开合。第一次按键执行 open，之后在 close 和
+open 之间切换。夹爪命令执行期间的重复 Volume Down 会被忽略。夹住物体时 close
+可能返回 timeout，但下一次按键仍会执行 open。
 
 3. 闭合夹爪并回到安全零位：
 

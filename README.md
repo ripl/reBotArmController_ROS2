@@ -354,22 +354,31 @@ robot base is not calibrated.
 Start in preview mode:
 
 ```bash
-ros2 launch rebotarm_phone_teleop phone_teleop.launch.py
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py \
+  command_enabled:=false
 ```
 
 After phone calibration, single-click Volume Up to start or pause teleoperation.
 The node captures the current phone position and `base_link -> end_link`, then
-maps base-frame phone translation relative to those initial poses. This first
-version keeps the initial EEF orientation fixed. Preview targets are published
-on `/phone_teleop/eef_target_preview` and as the
+maps base-frame phone translation and rotation relative to those initial poses
+onto the EEF target. Preview targets are published on
+`/phone_teleop/eef_target_preview` and as the
 `phone_teleop_eef_target` TF frame.
+
+```text
+R_delta = R_phone_current * inverse(R_phone_initial)
+R_eef_target = R_delta * R_eef_initial
+```
 
 After checking the mapping in RViz, enable hardware commands explicitly:
 
 ```bash
-ros2 launch rebotarm_phone_teleop phone_teleop.launch.py \
-  command_enabled:=true position_scale:=0.3
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py
 ```
+
+The launch defaults are `command_enabled=true`, `enable_orientation=true`, and
+`position_scale=0.8`. Pass `enable_orientation:=false` to map translation only
+and hold the initial EEF orientation.
 
 Command mode manages `/rebotarm/eef_streaming/enable` and publishes
 `/rebotarm/eef_target_pose` at 50 Hz. A phone pose timeout, invalid calibration,
@@ -380,6 +389,12 @@ On startup, command mode first uses the `/rebotarm/move_to_pose` action to move
 to `teleop_ready_pose` over two seconds: position `(0.3, 0.0, 0.3)` and
 orientation `(x=0, y=0, z=0, w=1)`. Volume Up is accepted only after the action
 succeeds. Preview mode does not move the arm.
+
+In command mode, single-click Volume Down to toggle the binary gripper. The
+first click opens it, and subsequent clicks alternate between close and open.
+Repeated Volume Down events are ignored while a gripper request is in progress.
+A close command may time out when holding an object; the next click still opens
+the gripper.
 
 3. Close the gripper and return to safe home:
 

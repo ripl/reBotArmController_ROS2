@@ -11,10 +11,15 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from rebotarm_msgs.action import MoveToPose
 from rebotarm_msgs.msg import ArmStatus, PhoneButtonEvent, PhoneTrackingStatus
+from rebotarm_msgs.srv import GripperCommand
 from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
-from .mapping import map_relative_position
+from .mapping import (
+    map_relative_orientation,
+    map_relative_position,
+    normalize_quaternion,
+)
 
 
 class PhoneEefTeleop(Node):
@@ -29,6 +34,7 @@ class PhoneEefTeleop(Node):
         super().__init__("phone_eef_teleop")
 
         self.declare_parameter("command_enabled", False)
+        self.declare_parameter("enable_orientation", True)
         self.declare_parameter("position_scale", 0.3)
         self.declare_parameter("publish_rate", 50.0)
         self.declare_parameter("phone_pose_timeout", 0.15)
@@ -37,6 +43,9 @@ class PhoneEefTeleop(Node):
 
         self._command_enabled = bool(
             self.get_parameter("command_enabled").value
+        )
+        self._enable_orientation = bool(
+            self.get_parameter("enable_orientation").value
         )
         self._position_scale = float(
             self.get_parameter("position_scale").value
@@ -100,6 +109,14 @@ class PhoneEefTeleop(Node):
             SetBool,
             "/rebotarm/eef_streaming/enable",
         )
+        self._gripper_open_client = self.create_client(
+            GripperCommand,
+            "/rebotarm/gripper/open",
+        )
+        self._gripper_close_client = self.create_client(
+            GripperCommand,
+            "/rebotarm/gripper/close",
+        )
         self._ready_pose_client = ActionClient(
             self,
             MoveToPose,
@@ -121,11 +138,15 @@ class PhoneEefTeleop(Node):
         self._active_session_id = ""
         self._arm_state: str | None = None
         self._latest_phone_position: tuple[float, float, float] | None = None
+        self._latest_phone_orientation: tuple[float, float, float, float] | None = None
         self._latest_phone_monotonic: float | None = None
         self._initial_phone_position: tuple[float, float, float] | None = None
+        self._initial_phone_orientation: tuple[float, float, float, float] | None = None
         self._initial_eef_position: tuple[float, float, float] | None = None
         self._initial_eef_orientation: tuple[float, float, float, float] | None = None
         self._cancel_enable = False
+        self._gripper_open = False
+        self._gripper_request_in_flight = False
 
         self._timer = self.create_timer(
             1.0 / self._publish_rate,
@@ -172,7 +193,20 @@ class PhoneEefTeleop(Node):
         if not all(math.isfinite(value) for value in position):
             self.get_logger().warn("ignoring invalid phone position")
             return
+        try:
+            orientation = normalize_quaternion(
+                (
+                    message.pose.orientation.x,
+                    message.pose.orientation.y,
+                    message.pose.orientation.z,
+                    message.pose.orientation.w,
+                )
+            )
+        except ValueError:
+            self.get_logger().warn("ignoring invalid phone orientation")
+            return
         self._latest_phone_position = position
+        self._latest_phone_orientation = orientation
         self._latest_phone_monotonic = time.monotonic()
 
     def _tracking_status_callback(
@@ -204,18 +238,65 @@ class PhoneEefTeleop(Node):
             )
 
     def _button_callback(self, message: PhoneButtonEvent) -> None:
+        if message.gesture != PhoneButtonEvent.SINGLE:
+            return
+        if message.button == PhoneButtonEvent.VOLUME_UP:
+            if self._state == self.INACTIVE:
+                self._begin_activation()
+            elif self._state == self.ENABLING:
+                self._cancel_enable = True
+                self.get_logger().info("teleop pause requested while enabling")
+            elif self._state == self.ACTIVE:
+                self._begin_deactivation("teleop paused by Volume Up")
+        elif message.button == PhoneButtonEvent.VOLUME_DOWN:
+            self._toggle_gripper()
+
+    def _toggle_gripper(self) -> None:
         if (
-            message.button != PhoneButtonEvent.VOLUME_UP
-            or message.gesture != PhoneButtonEvent.SINGLE
+            not self._command_enabled
+            or self._state not in (self.INACTIVE, self.ACTIVE)
         ):
             return
-        if self._state == self.INACTIVE:
-            self._begin_activation()
-        elif self._state == self.ENABLING:
-            self._cancel_enable = True
-            self.get_logger().info("teleop pause requested while enabling")
-        elif self._state == self.ACTIVE:
-            self._begin_deactivation("teleop paused by Volume Up")
+        if self._gripper_request_in_flight:
+            self.get_logger().warn("ignoring Volume Down; gripper command in progress")
+            return
+
+        target_open = not self._gripper_open
+        client = (
+            self._gripper_open_client
+            if target_open
+            else self._gripper_close_client
+        )
+        label = "open" if target_open else "close"
+        if not client.service_is_ready():
+            self.get_logger().warn(f"gripper {label} service is unavailable")
+            return
+
+        self._gripper_open = target_open
+        self._gripper_request_in_flight = True
+        future = client.call_async(GripperCommand.Request())
+        future.add_done_callback(
+            lambda result: self._gripper_command_done(result, label)
+        )
+        self.get_logger().info(f"requesting gripper {label}")
+
+    def _gripper_command_done(self, future, label: str) -> None:
+        self._gripper_request_in_flight = False
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().error(f"gripper {label} failed: {exc}")
+            return
+        if response.success:
+            self.get_logger().info(
+                f"gripper {label} complete at "
+                f"{response.reached_position:.3f} rad"
+            )
+        else:
+            self.get_logger().warn(
+                f"gripper {label} command sent but target not reached: "
+                f"{response.message}; current={response.reached_position:.3f} rad"
+            )
 
     def _move_to_ready_pose(self) -> None:
         if (
@@ -348,6 +429,7 @@ class PhoneEefTeleop(Node):
 
     def _capture_initial_poses(self) -> bool:
         assert self._latest_phone_position is not None
+        assert self._latest_phone_orientation is not None
         try:
             transform = self._tf_buffer.lookup_transform(
                 self._base_frame,
@@ -379,6 +461,7 @@ class PhoneEefTeleop(Node):
             self.get_logger().warn("cannot start teleop: EEF TF is invalid")
             return False
         self._initial_phone_position = self._latest_phone_position
+        self._initial_phone_orientation = self._latest_phone_orientation
         self._initial_eef_position = eef_position
         self._initial_eef_orientation = eef_orientation
         return True
@@ -386,6 +469,7 @@ class PhoneEefTeleop(Node):
     def _phone_pose_is_fresh(self) -> bool:
         return (
             self._latest_phone_position is not None
+            and self._latest_phone_orientation is not None
             and self._latest_phone_monotonic is not None
             and time.monotonic() - self._latest_phone_monotonic
             <= self._phone_pose_timeout
@@ -402,7 +486,9 @@ class PhoneEefTeleop(Node):
             return
 
         assert self._latest_phone_position is not None
+        assert self._latest_phone_orientation is not None
         assert self._initial_phone_position is not None
+        assert self._initial_phone_orientation is not None
         assert self._initial_eef_position is not None
         assert self._initial_eef_orientation is not None
         position = map_relative_position(
@@ -411,6 +497,13 @@ class PhoneEefTeleop(Node):
             self._initial_eef_position,
             self._position_scale,
         )
+        orientation = self._initial_eef_orientation
+        if self._enable_orientation:
+            orientation = map_relative_orientation(
+                self._initial_phone_orientation,
+                self._latest_phone_orientation,
+                self._initial_eef_orientation,
+            )
         message = PoseStamped()
         message.header.stamp = self.get_clock().now().to_msg()
         message.header.frame_id = self._base_frame
@@ -422,7 +515,7 @@ class PhoneEefTeleop(Node):
             message.pose.orientation.y,
             message.pose.orientation.z,
             message.pose.orientation.w,
-        ) = self._initial_eef_orientation
+        ) = orientation
         self._preview_publisher.publish(message)
         if self._command_enabled:
             self._target_publisher.publish(message)
@@ -454,8 +547,10 @@ class PhoneEefTeleop(Node):
         self._clear_latched_poses()
         if not self._command_enabled:
             self._state = self.INACTIVE
-            log = self.get_logger().warn if warning else self.get_logger().info
-            log(reason)
+            if warning:
+                self.get_logger().warn(reason)
+            else:
+                self.get_logger().info(reason)
             return
 
         self._state = self.DISABLING
@@ -481,9 +576,11 @@ class PhoneEefTeleop(Node):
                 f"{reason}; EEF streaming disable failed: {exc}"
             )
             return
-        log = self.get_logger().warn if warning else self.get_logger().info
         if response.success:
-            log(reason)
+            if warning:
+                self.get_logger().warn(reason)
+            else:
+                self.get_logger().info(reason)
         else:
             self.get_logger().error(
                 f"{reason}; EEF streaming disable rejected: {response.message}"
@@ -492,6 +589,7 @@ class PhoneEefTeleop(Node):
     def _clear_latched_poses(self) -> None:
         self._active_session_id = ""
         self._initial_phone_position = None
+        self._initial_phone_orientation = None
         self._initial_eef_position = None
         self._initial_eef_orientation = None
 
