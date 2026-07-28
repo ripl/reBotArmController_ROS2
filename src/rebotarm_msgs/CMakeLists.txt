@@ -12,6 +12,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/JointPosVelCmd.msg"
   "msg/JointMotorState.msg"
   "msg/ArmStatus.msg"
+  "msg/PhoneButtonEvent.msg"
+  "msg/PhoneTrackingStatus.msg"
   "srv/SetZero.srv"
   "srv/MoveToPoseIK.srv"
   "srv/SetGripper.srv"
