@@ -349,6 +349,15 @@ Because calibration estimates only rotation, the base-frame pose and TF use
 `t_BW=0`; relative motion is valid, but its absolute translation from the
 robot base is not calibrated.
 
+The bridge applies a first-order low-pass filter to position and orientation
+before publishing pose and TF. Its default time constant is `0.1` seconds;
+increase it for stronger smoothing at the cost of more latency:
+
+```bash
+ros2 launch rebotarm_phone_bridge phone_bridge.launch.py \
+  pose_filter_time_constant:=0.1
+```
+
 ## iPhone EEF Teleoperation
 
 Start in preview mode:
@@ -388,7 +397,9 @@ never resumes automatically.
 On startup, command mode first uses the `/rebotarm/move_to_pose` action to move
 to `teleop_ready_pose` over two seconds: position `(0.3, 0.0, 0.3)` and
 orientation `(x=0, y=0, z=0, w=1)`. Volume Up is accepted only after the action
-succeeds. Preview mode does not move the arm.
+succeeds. Double-click Volume Up in command mode to stop teleoperation, return
+to `teleop_ready_pose`, and leave the arm in `IDLE`. Preview mode does not move
+the arm.
 
 In command mode, single-click Volume Down to toggle the binary gripper. The
 first click opens it, and subsequent clicks alternate between close and open.

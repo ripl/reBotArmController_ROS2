@@ -26,12 +26,12 @@ models:
           open: -3.0
           close: 2.4
         grasp:
-          close_torque: 1.0
+          close_torque: 0.7
           hold_torque: 0.15
           torque_limit: 1.0
           move_kp: 2.5
           move_kd: 1.0
-          close_kd: 0.2
+          close_kd: 0.1
           stall_velocity: 0.05
           stall_duration: 0.10
           startup_distance: 0.30

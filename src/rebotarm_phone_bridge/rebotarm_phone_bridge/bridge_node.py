@@ -23,6 +23,7 @@ from .calibration import (
     transform_pose_world_to_base,
 )
 from .osc_decoder import decode_packet, OscDecodeError, OscMessage
+from .pose_filter import PoseLowPassFilter
 
 
 class PhoneTrackingBridge(Node):
@@ -35,6 +36,7 @@ class PhoneTrackingBridge(Node):
         self.declare_parameter("world_frame_id", "phone_ar_world")
         self.declare_parameter("phone_frame_id", "phone_camera")
         self.declare_parameter("pose_timeout", 0.5)
+        self.declare_parameter("pose_filter.time_constant", 0.1)
         self.declare_parameter("calibration.num_samples", 100)
         self.declare_parameter("calibration.min_inlier_samples", 50)
         self.declare_parameter("calibration.outlier_threshold_deg", 3.0)
@@ -45,6 +47,9 @@ class PhoneTrackingBridge(Node):
         self._world_frame = str(self.get_parameter("world_frame_id").value)
         self._phone_frame = str(self.get_parameter("phone_frame_id").value)
         self._pose_timeout = float(self.get_parameter("pose_timeout").value)
+        self._pose_filter_time_constant = float(
+            self.get_parameter("pose_filter.time_constant").value
+        )
         self._sample_target = int(
             self.get_parameter("calibration.num_samples").value
         )
@@ -93,6 +98,9 @@ class PhoneTrackingBridge(Node):
         self._pending_position: np.ndarray | None = None
         self._R_BW: np.ndarray | None = None
         self._calibration_samples: list[np.ndarray] = []
+        self._pose_filter = PoseLowPassFilter(
+            self._pose_filter_time_constant
+        )
         self._seen_button_sequences: deque[int] = deque(maxlen=256)
         self._seen_button_sequence_set: set[int] = set()
         self._invalid_packet_count = 0
@@ -122,6 +130,11 @@ class PhoneTrackingBridge(Node):
             raise ValueError("port must be in [1, 65535]")
         if self._pose_timeout <= 0.0:
             raise ValueError("pose_timeout must be positive")
+        if (
+            not math.isfinite(self._pose_filter_time_constant)
+            or self._pose_filter_time_constant <= 0.0
+        ):
+            raise ValueError("pose_filter.time_constant must be positive and finite")
         if self._sample_target <= 0:
             raise ValueError("calibration.num_samples must be positive")
         if not 1 <= self._min_inliers <= self._sample_target:
@@ -245,9 +258,19 @@ class PhoneTrackingBridge(Node):
             return
 
         was_stream_valid = self._stream_valid()
-        self._last_pose_monotonic = time.monotonic()
+        received_monotonic = time.monotonic()
+        filtered_position, filtered_quaternion = self._pose_filter.update(
+            position,
+            quaternion,
+            received_monotonic,
+        )
+        self._last_pose_monotonic = received_monotonic
         stamp = self.get_clock().now().to_msg()
-        self._publish_world_pose(position, quaternion, stamp)
+        self._publish_world_pose(
+            filtered_position,
+            filtered_quaternion,
+            stamp,
+        )
 
         if self._state == PhoneTrackingStatus.COLLECTING:
             self._calibration_samples.append(quaternion)
@@ -260,8 +283,8 @@ class PhoneTrackingBridge(Node):
         if self._R_BW is not None:
             position_base, quaternion_base = transform_pose_world_to_base(
                 self._R_BW,
-                position,
-                quaternion,
+                filtered_position,
+                filtered_quaternion,
             )
             self._publish_base_pose(position_base, quaternion_base, stamp)
             self._broadcast_calibration(stamp)
@@ -424,6 +447,7 @@ class PhoneTrackingBridge(Node):
         self._pending_position = None
         self._last_pose_monotonic = None
         self._session_started_monotonic = None
+        self._pose_filter.reset()
         self._calibration_samples.clear()
         self._seen_button_sequences.clear()
         self._seen_button_sequence_set.clear()

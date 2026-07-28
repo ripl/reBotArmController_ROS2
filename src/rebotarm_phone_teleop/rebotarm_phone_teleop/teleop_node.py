@@ -238,6 +238,12 @@ class PhoneEefTeleop(Node):
             )
 
     def _button_callback(self, message: PhoneButtonEvent) -> None:
+        if (
+            message.button == PhoneButtonEvent.VOLUME_UP
+            and message.gesture == PhoneButtonEvent.DOUBLE
+        ):
+            self._return_to_ready_pose()
+            return
         if message.gesture != PhoneButtonEvent.SINGLE:
             return
         if message.button == PhoneButtonEvent.VOLUME_UP:
@@ -298,6 +304,34 @@ class PhoneEefTeleop(Node):
                 f"{response.message}; current={response.reached_position:.3f} rad"
             )
 
+    def _return_to_ready_pose(self) -> None:
+        if not self._command_enabled:
+            self.get_logger().warn(
+                "ignoring Volume Up double-click in preview mode"
+            )
+            return
+        if self._state == self.ACTIVE:
+            self._begin_deactivation(
+                "returning to teleop_ready_pose",
+                return_to_ready=True,
+            )
+        elif self._state in (self.INACTIVE, self.READY_FAILED):
+            if self._arm_state != "IDLE":
+                self.get_logger().warn(
+                    "cannot return to teleop_ready_pose: "
+                    f"arm state is {self._arm_state or 'unknown'}, expected IDLE"
+                )
+                return
+            self._begin_move_to_ready_pose()
+
+    def _begin_move_to_ready_pose(self) -> None:
+        self._clear_latched_poses()
+        self._state = self.MOVING_TO_READY
+        self._ready_goal_sent = False
+        self._ready_goal_handle = None
+        self._ready_pose_timer.reset()
+        self._move_to_ready_pose()
+
     def _move_to_ready_pose(self) -> None:
         if (
             not self._command_enabled
@@ -345,7 +379,7 @@ class PhoneEefTeleop(Node):
         self._state = self.INACTIVE
         self.get_logger().info(
             "teleop_ready_pose reached; "
-            "Volume Up single-click toggles teleop"
+            "Volume Up single-click toggles teleop, double-click returns to ready"
         )
 
     def _ready_pose_failed(self, reason: str) -> None:
@@ -543,6 +577,7 @@ class PhoneEefTeleop(Node):
         reason: str,
         *,
         warning: bool = False,
+        return_to_ready: bool = False,
     ) -> None:
         self._clear_latched_poses()
         if not self._command_enabled:
@@ -564,10 +599,21 @@ class PhoneEefTeleop(Node):
         request.data = False
         future = self._streaming_client.call_async(request)
         future.add_done_callback(
-            lambda result: self._disable_done(result, reason, warning)
+            lambda result: self._disable_done(
+                result,
+                reason,
+                warning,
+                return_to_ready,
+            )
         )
 
-    def _disable_done(self, future, reason: str, warning: bool) -> None:
+    def _disable_done(
+        self,
+        future,
+        reason: str,
+        warning: bool,
+        return_to_ready: bool,
+    ) -> None:
         self._state = self.INACTIVE
         try:
             response = future.result()
@@ -581,6 +627,8 @@ class PhoneEefTeleop(Node):
                 self.get_logger().warn(reason)
             else:
                 self.get_logger().info(reason)
+            if return_to_ready:
+                self._begin_move_to_ready_pose()
         else:
             self.get_logger().error(
                 f"{reason}; EEF streaming disable rejected: {response.message}"

@@ -346,6 +346,14 @@ base_link -> phone_ar_world -> phone_camera
 `base_link -> phone_ar_world`。由于当前 calibration 只估计旋转，`pose_base` 和 TF
 使用 `t_BW=0`；其相对位移和轴方向有效，不表示手机相对机器人 base 的绝对平移。
 
+bridge 在发布 pose 和 TF 前会对位置和姿态执行一阶低通滤波。默认时间常数为
+`0.1` 秒；增大该值会加强平滑，但也会增加延迟：
+
+```bash
+ros2 launch rebotarm_phone_bridge phone_bridge.launch.py \
+  pose_filter_time_constant:=0.1
+```
+
 ## iPhone EEF Teleop
 
 先用预览模式检查映射：
@@ -397,7 +405,9 @@ Volume Up，不会自动重启。
 
 真机模式启动后会先通过 `/rebotarm/move_to_pose` action，用 2 秒移动到
 `teleop_ready_pose`：位置 `(0.3, 0.0, 0.3)`，姿态 `(x=0, y=0, z=0, w=1)`。
-action 成功后才允许 Volume Up 开启 teleop。预览模式不会执行该动作。
+action 成功后才允许 Volume Up 开启 teleop。真机模式下双击 Volume Up 会先停止
+teleop，再回到 `teleop_ready_pose`，最终使机械臂处于 `IDLE`。预览模式不会执行该
+动作。
 
 真机模式下，单击 Volume Down 切换夹爪开合。第一次按键执行 open，之后在 close 和
 open 之间切换。夹爪命令执行期间的重复 Volume Down 会被忽略。夹住物体时 close
