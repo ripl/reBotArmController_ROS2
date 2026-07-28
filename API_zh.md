@@ -22,6 +22,11 @@
 | Topic | `/rebotarm/joint_states` | `sensor_msgs/msg/JointState` | 6 轴关节状态 |
 | Topic | `/rebotarm/arm_status` | `rebotarm_msgs/msg/ArmStatus` | controller 状态机和健康状态 |
 | Topic | `/rebotarm/eef_target_pose` | `geometry_msgs/msg/PoseStamped` | 流式末端目标位姿 |
+| Topic | `/phone_tracking/pose_world` | `geometry_msgs/msg/PoseStamped` | AR world 下的手机 pose |
+| Topic | `/phone_tracking/pose_base` | `geometry_msgs/msg/PoseStamped` | 旋转标定后的 base-frame 手机 pose |
+| Topic | `/phone_tracking/button_event` | `rebotarm_msgs/msg/PhoneButtonEvent` | 去重后的手机按键事件 |
+| Topic | `/phone_tracking/status` | `rebotarm_msgs/msg/PhoneTrackingStatus` | 手机 stream 与标定状态 |
+| Topic | `/phone_teleop/eef_target_preview` | `geometry_msgs/msg/PoseStamped` | 手机 teleop 计算出的 EEF 预览目标 |
 | Topic | `/rebotarm/joints/<joint>/state` | `rebotarm_msgs/msg/JointMotorState` | 单关节电机状态 |
 | Topic | `/rebotarm/gripper/state` | `rebotarm_msgs/msg/JointMotorState` | 夹爪电机状态 |
 | Service | `/rebotarm/enable` | `std_srvs/srv/Trigger` | 使能机械臂 |
@@ -31,6 +36,7 @@
 | Service | `/rebotarm/set_zero` | `rebotarm_msgs/srv/SetZero` | 设置关节零点 |
 | Service | `/rebotarm/move_to_pose_ik` | `rebotarm_msgs/srv/MoveToPoseIK` | IK 预检查和目标关节角求解 |
 | Service | `/rebotarm/eef_streaming/enable` | `std_srvs/srv/SetBool` | 启停流式末端位姿控制 |
+| Service | `/phone_tracking/calibrate` | `std_srvs/srv/Trigger` | 开始收集手机 orientation 标定样本 |
 | Service | `/rebotarm/gripper/set` | `rebotarm_msgs/srv/SetGripper` | 设置夹爪电机位置 |
 | Service | `/rebotarm/gripper/open` | `rebotarm_msgs/srv/GripperCommand` | 打开夹爪到指定或默认位置 |
 | Service | `/rebotarm/gripper/close` | `rebotarm_msgs/srv/GripperCommand` | 闭合夹爪到指定或默认位置 |
@@ -721,6 +727,44 @@ float64 position
 float64 velocity
 float64 torque
 uint8 status_code
+```
+
+### `PhoneButtonEvent.msg`
+
+```text
+uint8 VOLUME_DOWN=1
+uint8 VOLUME_UP=2
+uint8 BUTTON_A=3
+uint8 BUTTON_B=4
+uint8 SINGLE=1
+uint8 DOUBLE=2
+
+std_msgs/Header header
+int32 sequence
+uint8 button
+uint8 gesture
+float64 source_timestamp
+```
+
+`header.stamp` 是 PC 接收时间；`source_timestamp` 是 iPhone monotonic event time。
+
+### `PhoneTrackingStatus.msg`
+
+```text
+uint8 DISCONNECTED=0
+uint8 UNCALIBRATED=1
+uint8 COLLECTING=2
+uint8 CALIBRATED=3
+uint8 ERROR=4
+
+std_msgs/Header header
+uint8 state
+string session_id
+bool stream_valid
+bool calibration_valid
+uint32 calibration_samples
+uint32 calibration_target_samples
+string message
 ```
 
 ### `JointMitCmd.msg`

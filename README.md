@@ -320,6 +320,67 @@ command. The SDK solver returns immediately after reaching its configured
 tolerance, while endpoint IK used by `move_to_pose` retains its separate
 `200`-iteration upper bound.
 
+## iPhone Pose Bridge
+
+`rebotarm_phone_bridge` receives pose and button OSC/UDP packets from the iOS
+app. `R_BW` exists only in node memory. A new AR session ID or a pose timeout
+clears it and requires a new calibration.
+
+Start the bridge and the optional keyboard client:
+
+```bash
+ros2 launch rebotarm_phone_bridge phone_bridge.launch.py
+ros2 run rebotarm_phone_bridge phone_calibration_keyboard
+```
+
+Press `c` while the phone is held in the known calibration orientation. The
+bridge publishes:
+
+```text
+/phone_tracking/pose_world
+/phone_tracking/pose_base
+/phone_tracking/button_event
+/phone_tracking/status
+```
+
+It always broadcasts `phone_ar_world -> phone_camera`. After calibration it
+also broadcasts `base_link -> phone_ar_world`, whose rotation is `R_BW`.
+Because calibration estimates only rotation, the base-frame pose and TF use
+`t_BW=0`; relative motion is valid, but its absolute translation from the
+robot base is not calibrated.
+
+## iPhone EEF Teleoperation
+
+Start in preview mode:
+
+```bash
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py
+```
+
+After phone calibration, single-click Volume Up to start or pause teleoperation.
+The node captures the current phone position and `base_link -> end_link`, then
+maps base-frame phone translation relative to those initial poses. This first
+version keeps the initial EEF orientation fixed. Preview targets are published
+on `/phone_teleop/eef_target_preview` and as the
+`phone_teleop_eef_target` TF frame.
+
+After checking the mapping in RViz, enable hardware commands explicitly:
+
+```bash
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py \
+  command_enabled:=true position_scale:=0.3
+```
+
+Command mode manages `/rebotarm/eef_streaming/enable` and publishes
+`/rebotarm/eef_target_pose` at 50 Hz. A phone pose timeout, invalid calibration,
+new AR session, or arm state leaving `EEF_STREAMING` stops teleoperation. It
+never resumes automatically.
+
+On startup, command mode first uses the `/rebotarm/move_to_pose` action to move
+to `teleop_ready_pose` over two seconds: position `(0.3, 0.0, 0.3)` and
+orientation `(x=0, y=0, z=0, w=1)`. Volume Up is accepted only after the action
+succeeds. Preview mode does not move the arm.
+
 3. Close the gripper and return to safe home:
 
 ```bash

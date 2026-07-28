@@ -302,6 +302,83 @@ streaming IK 使用独立的 `eef_streaming.ik_max_iter` 预算。默认值为 `
 求解都会以上一周期的关节命令作为 warm start。SDK IK 达到配置的 tolerance 后会立即
 返回，而 `move_to_pose` 使用的终点 IK 仍保留独立的 `200` 次迭代上限。
 
+## iPhone Pose Bridge
+
+`rebotarm_phone_bridge` 接收 iOS app 的 OSC/UDP pose 和按键事件。标定结果
+`R_BW` 只保存在 node 内存中，不写文件；app 每次以 `resetTracking` 启动 AR session
+时会发送新的 session ID，bridge 检测到 ID 改变或 pose 超时后立即清除标定。
+
+启动 bridge：
+
+```bash
+ros2 launch rebotarm_phone_bridge phone_bridge.launch.py
+```
+
+保持手机处于已知标定姿态，然后在另一个终端按 `c`：
+
+```bash
+ros2 run rebotarm_phone_bridge phone_calibration_keyboard
+```
+
+也可以直接调用：
+
+```bash
+ros2 service call /phone_tracking/calibrate std_srvs/srv/Trigger "{}"
+```
+
+主要输出：
+
+```text
+/phone_tracking/pose_world    geometry_msgs/msg/PoseStamped
+/phone_tracking/pose_base     geometry_msgs/msg/PoseStamped
+/phone_tracking/button_event  rebotarm_msgs/msg/PhoneButtonEvent
+/phone_tracking/status        rebotarm_msgs/msg/PhoneTrackingStatus
+```
+
+为了在 RViz 中检查 pose，bridge 同时广播：
+
+```text
+base_link -> phone_ar_world -> phone_camera
+              R_BW              T_WC
+```
+
+未标定时只发布 `phone_ar_world -> phone_camera`；标定后增加
+`base_link -> phone_ar_world`。由于当前 calibration 只估计旋转，`pose_base` 和 TF
+使用 `t_BW=0`；其相对位移和轴方向有效，不表示手机相对机器人 base 的绝对平移。
+
+## iPhone EEF Teleop
+
+先用预览模式检查映射：
+
+```bash
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py
+```
+
+bridge 标定完成且机械臂处于 `IDLE` 后，单击手机 Volume Up 开启/暂停 teleop。开启时
+node 同时记录手机位置和 `base_link -> end_link`，随后使用：
+
+```text
+eef_target = initial_eef + position_scale * (phone - initial_phone)
+```
+
+第一版只映射位置，EEF 姿态保持为开启瞬间的姿态。预览目标发布在
+`/phone_teleop/eef_target_preview`，TF child frame 为
+`phone_teleop_eef_target`。确认 RViz 中的方向和尺度后再启用真机命令：
+
+```bash
+ros2 launch rebotarm_phone_teleop phone_teleop.launch.py \
+  command_enabled:=true position_scale:=0.3
+```
+
+真机模式会自动调用 `/rebotarm/eef_streaming/enable`，并以 50 Hz 发布
+`/rebotarm/eef_target_pose`。手机 pose 超时、标定失效、AR session 改变或机械臂退出
+`EEF_STREAMING` 时，teleop 会停止并请求关闭 EEF streaming；恢复后必须再次单击
+Volume Up，不会自动重启。
+
+真机模式启动后会先通过 `/rebotarm/move_to_pose` action，用 2 秒移动到
+`teleop_ready_pose`：位置 `(0.3, 0.0, 0.3)`，姿态 `(x=0, y=0, z=0, w=1)`。
+action 成功后才允许 Volume Up 开启 teleop。预览模式不会执行该动作。
+
 3. 闭合夹爪并回到安全零位：
 
 ```bash
