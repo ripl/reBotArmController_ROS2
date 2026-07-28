@@ -9,6 +9,7 @@ from rebotarm_msgs.srv import (
 from std_srvs.srv import Trigger
 
 from .conversions import pose_to_xyz_rpy
+from .gripper_control import GripperControl
 
 
 class ArmServices:
@@ -128,9 +129,36 @@ class ArmServices:
         )
 
     def close_gripper(self, request, response):
-        return self._move_gripper(
-            request, response, self._hardware.gripper_close_position, "close"
-        )
+        try:
+            target = (
+                self._hardware.gripper_close_position
+                if request.position == 0.0
+                else float(request.position)
+            )
+            result, position = self._hardware.grasp_gripper(
+                target_position=target,
+                timeout=request.timeout if request.timeout > 0.0 else 3.0,
+            )
+            response.success = result in (
+                GripperControl.CONTACT,
+                GripperControl.REACHED_TARGET,
+            )
+            response.reached_position = float(position)
+            messages = {
+                GripperControl.CONTACT: "gripper close complete: object contact",
+                GripperControl.REACHED_TARGET: (
+                    "gripper close complete: target reached without contact"
+                ),
+                GripperControl.TIMEOUT: "gripper close timeout",
+                GripperControl.CANCELED: "gripper close canceled",
+            }
+            response.message = messages.get(result, f"gripper close failed: {result}")
+        except Exception as exc:
+            response.success = False
+            response.reached_position = 0.0
+            response.message = str(exc)
+        self._node.publish_arm_status()
+        return response
 
     def _move_gripper(self, request, response, default_target: float, label: str):
         try:

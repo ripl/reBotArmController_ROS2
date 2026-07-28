@@ -33,7 +33,7 @@ pick_place:
     hardware_open_gripper_position: 5.0
     hardware_closed_gripper_position: 0.0
     gripper_motion_duration: 1.0
-    gripper_max_effort: 10.0
+    gripper_max_effort: 1.50
 
     object_id: demo_object
     object_frame_id: base_link

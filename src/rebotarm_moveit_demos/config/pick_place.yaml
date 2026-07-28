@@ -30,10 +30,11 @@ pick_place:
     open_gripper_position: 0.045
     grasp_gripper_position: 0.017
     closed_gripper_position: 0.0
-    hardware_open_gripper_position: -5.0
-    hardware_closed_gripper_position: 0.0
+    # User-calibrated DM range; previous values: open -5.0, close 0.0.
+    hardware_open_gripper_position: -3.0
+    hardware_closed_gripper_position: 2.4
     gripper_motion_duration: 1.0
-    gripper_max_effort: 10.0
+    gripper_max_effort: 1.0
 
     object_id: demo_object
     object_frame_id: base_link

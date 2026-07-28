@@ -523,8 +523,11 @@ Model defaults in `rebotarm_hardware.yaml`:
 
 | Model | Default channel | Arm mode | Gripper limits |
 |---|---|---|---|
-| `dm` | `/dev/ttyACM0` | `posvel` | open `-5.0`, close `0.0` |
+| `dm` | `/dev/ttyACM0` | `posvel` | open `-3.0`, close `2.4` |
 | `rs` | `can0` | `mit` | open `5.0`, close `0.0` |
+
+The DM gripper limits are user-calibrated values; the previous values were
+open `-5.0` and close `0.0`.
 
 ---
 

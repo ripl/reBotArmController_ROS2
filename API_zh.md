@@ -391,15 +391,18 @@ ros2 service call /rebotarm/move_to_pose_ik rebotarm_msgs/srv/MoveToPoseIK \
 rebotarm_msgs/srv/SetGripper
 ```
 
-说明：设置夹爪电机位置。ROS 层直接调用 SDK `Gripper.pos_vel()`，因此这里沿用
-SDK 夹爪电机角度单位 rad，不再做开口距离到电机角度的二次映射。
+说明：设置夹爪电机位置。controller 在 500 Hz 控制循环中发送 MIT 位置命令，
+使用 `move_kp` / `move_kd`；这里沿用夹爪电机角度单位 rad，不做开口距离映射。
+
+当前 DM 夹爪使用用户实机标定范围：open `-3.0`、close `2.4`；之前的范围是
+open `-5.0`、close `0.0`。
 
 请求：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `position` | `float64` | 目标夹爪电机位置，rad |
-| `max_effort` | `float64` | 预留字段；当前 POS_VEL 控制不使用 |
+| `max_effort` | `float64` | 预留字段；该 service 当前不使用 |
 
 响应：
 
@@ -412,7 +415,7 @@ SDK 夹爪电机角度单位 rad，不再做开口距离到电机角度的二次
 
 ```bash
 ros2 service call /rebotarm/gripper/set rebotarm_msgs/srv/SetGripper \
-  "{position: -5.0, max_effort: 0.0}"
+  "{position: -3.0, max_effort: 0.0}"
 ```
 
 ### `/rebotarm/gripper/open`
@@ -456,8 +459,32 @@ ros2 service call /rebotarm/gripper/open rebotarm_msgs/srv/GripperCommand \
 rebotarm_msgs/srv/GripperCommand
 ```
 
-说明：用位置控制闭合夹爪。`position` 为目标夹爪电机角度，单位 rad；传 `0.0`
-时使用 controller 默认闭合位置。该接口不做力反馈夹取判断。
+说明：使用 controller 内部的 500 Hz MIT 抓取状态机。`position` 为目标夹爪电机
+角度，单位 rad；传 `0.0` 时使用默认闭合位置。`timeout` 小于等于 `0.0` 时使用
+默认值 3 s。
+
+- `CLOSING`：`kp=0`、`kd=close_kd`，按 `min(close_torque, torque_limit)` 输出闭合力矩。
+- 移动超过 `startup_distance` 后，低速持续 `stall_duration` 即判定接触并进入 `HOLDING`。
+- `HOLDING`：在接触位置使用 `move_kp` / `move_kd` 和 `hold_torque` 保持夹持。
+- 到达闭合位置或检测到接触都返回成功；超时则停在当前位置并返回失败。
+
+当前 DM 夹爪的用户实机标定参数（之前 open 为 `-5.0`、close 为 `0.0`）：
+
+```yaml
+position_limits:
+  open: -3.0
+  close: 2.4
+grasp:
+  close_torque: 1.0
+  hold_torque: 0.15
+  torque_limit: 1.0
+  move_kp: 2.5
+  move_kd: 1.0
+  close_kd: 0.2
+  stall_velocity: 0.05
+  stall_duration: 0.10
+  startup_distance: 0.30
+```
 
 示例：
 
@@ -579,14 +606,15 @@ control_msgs/action/GripperCommand
 
 说明：标准夹爪 action。适合行为树、任务编排或 MoveIt 风格接口。
 
-Goal 中 `command.position` 单位为夹爪电机角度 rad。`command.max_effort` 为标准
-action 字段，当前 ROS 适配层直接使用 SDK POS_VEL 控制，暂不使用该字段做力矩限制。
+Goal 中 `command.position` 单位为夹爪电机角度 rad。向闭合方向运动时使用与
+`/rebotarm/gripper/close` 相同的抓取状态机；正数 `command.max_effort` 会覆盖
+`close_torque`，但仍受 `torque_limit` 限制。向打开方向运动时使用 MIT 位置控制。
 
 示例：
 
 ```bash
 ros2 action send_goal /rebotarm/gripper/command control_msgs/action/GripperCommand \
-  "{command: {position: 0.0, max_effort: 0.0}}"
+  "{command: {position: 2.4, max_effort: 1.0}}"
 ```
 
 ## 5. 低层 Command Topic
@@ -877,10 +905,10 @@ ros2 service call /rebotarm/disable std_srvs/srv/Trigger
 ros2 service call /rebotarm/enable std_srvs/srv/Trigger
 
 ros2 service call /rebotarm/gripper/set rebotarm_msgs/srv/SetGripper \
-  "{position: -5.0, max_effort: 0.0}"
+  "{position: -3.0, max_effort: 0.0}"
 
 ros2 service call /rebotarm/gripper/close rebotarm_msgs/srv/GripperCommand \
-  "{position: 0.0, timeout: 3.0}"
+  "{timeout: 3.0}"
 
 ros2 service call /rebotarm/disable std_srvs/srv/Trigger
 ```

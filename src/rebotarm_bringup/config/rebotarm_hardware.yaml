@@ -21,9 +21,20 @@ models:
         gripper:
           joints: [gripper]
       gripper:
+        # User-calibrated DM range; previous values: open -5.0, close 0.0.
         position_limits:
-          open: -5.0
-          close: 0.0
+          open: -3.0
+          close: 2.4
+        grasp:
+          close_torque: 1.0
+          hold_torque: 0.15
+          torque_limit: 1.0
+          move_kp: 2.5
+          move_kd: 1.0
+          close_kd: 0.2
+          stall_velocity: 0.05
+          stall_duration: 0.10
+          startup_distance: 0.30
       control:
         arm_control_mode: posvel
         mit_kp: [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
@@ -49,6 +60,16 @@ models:
         position_limits:
           open: 5.0
           close: 0.0
+        grasp:
+          close_torque: 1.50
+          hold_torque: 0.30
+          torque_limit: 1.50
+          move_kp: 5.0
+          move_kd: 1.0
+          close_kd: 0.5
+          stall_velocity: 0.05
+          stall_duration: 0.10
+          startup_distance: 0.30
       control:
         arm_control_mode: mit
         mit_kp: [50.0, 150.0, 150.0, 50.0, 50.0, 50.0]

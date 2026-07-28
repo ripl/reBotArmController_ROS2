@@ -8,10 +8,10 @@ import time
 import numpy as np
 
 from .conversions import fk_to_pose, pose_to_xyz_rpy
+from .gripper_control import GripperControl, GripperControlConfig
 from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
-_GRIPPER_CLOSED_POSITION = 0.0
 
 
 def _locked(method):
@@ -87,10 +87,35 @@ class HardwareManager:
             if self.has_gripper and self._gripper_group.joint_names
             else ""
         )
-        gripper_limits = hardware_data.get("gripper", {}).get("position_limits", {})
+        gripper_data = hardware_data.get("gripper", {})
+        gripper_limits = gripper_data.get("position_limits", {})
         self.gripper_open_position = float(gripper_limits.get("open", 0.0))
         self.gripper_close_position = float(gripper_limits.get("close", 0.0))
         self._gripper_target_position: float | None = None
+        self._gripper_grasp_event = threading.Event()
+        self._last_gripper_state = (0.0, 0.0, 0.0, 0)
+        self._gripper_control: GripperControl | None = None
+        if self.has_gripper:
+            grasp = gripper_data.get("grasp", {})
+            self._gripper_control = GripperControl(
+                self.gripper_open_position,
+                self.gripper_close_position,
+                _GRIPPER_GOAL_TOLERANCE_RAD,
+                GripperControlConfig(
+                    close_torque=float(grasp.get("close_torque", 0.30)),
+                    hold_torque=float(grasp.get("hold_torque", 0.15)),
+                    torque_limit=float(grasp.get("torque_limit", 0.50)),
+                    move_kp=float(grasp.get("move_kp", 5.0)),
+                    move_kd=float(grasp.get("move_kd", 1.0)),
+                    close_kd=float(grasp.get("close_kd", 0.5)),
+                    stall_velocity=float(grasp.get("stall_velocity", 0.05)),
+                    stall_duration=float(grasp.get("stall_duration", 0.10)),
+                    startup_distance=float(grasp.get("startup_distance", 0.30)),
+                ),
+            )
+            # HardwareManager owns all gripper output so the SDK loop cannot
+            # overwrite torque-limited commands with its position target.
+            self._endpos_ctrl._has_gripper = False
 
         self._gc_model = load_robot_model()
         self._gc_data = self._gc_model.createData()
@@ -180,7 +205,9 @@ class HardwareManager:
         try:
             self._robot.connect()
             if self.has_gripper:
-                self._gripper_target_position = self.get_gripper_state()[0]
+                position = self.get_gripper_state()[0]
+                self._gripper_target_position = position
+                self._gripper_control.set_position(position)
             self._start_endpos_loop()
             self._connected = True
             self._enabled = True
@@ -314,7 +341,10 @@ class HardwareManager:
             self._homing_thread = threading.get_ident()
         try:
             if self.has_gripper:
-                self.set_gripper_position(_GRIPPER_CLOSED_POSITION)
+                self.grasp_gripper(
+                    target_position=self.gripper_close_position,
+                    timeout=3.0,
+                )
             self._endpos_ctrl.safe_home()
         finally:
             self._homing_thread = None
@@ -621,14 +651,11 @@ class HardwareManager:
     @_locked
     def set_gripper_target(self, position: float) -> None:
         self._begin_gripper_command(allow_endpos=True)
-        target = float(position)
+        target = self._gripper_control.set_position(position)
+        self._gripper_grasp_event.clear()
         self._endpos_ctrl.set_gripper_target(target)
-        self._gripper_group.send_mit(
-            np.array([target], dtype=np.float64),
-            kp=getattr(self._gripper_group, "_mit_kp"),
-            kd=getattr(self._gripper_group, "_mit_kd"),
-        )
         self._gripper_target_position = target
+        self._send_gripper_control_locked()
 
     def wait_gripper_target(self, timeout: float = 3.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -647,6 +674,94 @@ class HardwareManager:
         reached = self.wait_gripper_target(timeout)
         return reached, self.get_gripper_state()[0]
 
+    @_locked
+    def start_gripper_grasp(
+        self,
+        target_position: float | None = None,
+        max_effort: float | None = None,
+    ) -> None:
+        self._begin_gripper_command(allow_endpos=True)
+        if self._gripper_control.state == GripperControl.CLOSING:
+            raise RuntimeError("gripper grasp is already running")
+        position = self.get_gripper_state()[0]
+        target = (
+            self.gripper_close_position
+            if target_position is None
+            else float(target_position)
+        )
+        if not self._gripper_control.is_closing_target(position, target):
+            raise ValueError("gripper grasp target must move in the closing direction")
+        self._gripper_grasp_event.clear()
+        self._gripper_control.start_grasp(position, target, max_effort)
+        self._gripper_target_position = None
+        self._send_gripper_control_locked()
+        if self._gripper_control.result is not None:
+            self._gripper_grasp_event.set()
+
+    def grasp_gripper(
+        self,
+        target_position: float | None = None,
+        max_effort: float | None = None,
+        timeout: float = 3.0,
+    ) -> tuple[str, float]:
+        if self._gripper_control is None:
+            raise RuntimeError("gripper is not initialized")
+        target = (
+            self.gripper_close_position
+            if target_position is None
+            else float(target_position)
+        )
+        position = self.get_gripper_state()[0]
+        if not self._gripper_control.is_closing_target(position, target):
+            reached, final_position = self.set_gripper_position(target, timeout)
+            result = (
+                GripperControl.REACHED_TARGET if reached else GripperControl.TIMEOUT
+            )
+            return result, final_position
+
+        self.start_gripper_grasp(target, max_effort)
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        while time.monotonic() < deadline:
+            if self._gripper_grasp_event.wait(timeout=0.02):
+                break
+            self.get_gripper_state()
+
+        result = self.gripper_grasp_result()
+        if result is None:
+            self.cancel_gripper_grasp(GripperControl.TIMEOUT)
+            result = GripperControl.TIMEOUT
+        return result, self.get_gripper_state()[0]
+
+    @_locked
+    def cancel_gripper_grasp(
+        self,
+        result: str = GripperControl.CANCELED,
+    ) -> None:
+        position = self.get_gripper_state()[0]
+        self._gripper_control.cancel(position, result=result)
+        self._gripper_target_position = position
+        self._endpos_ctrl.set_gripper_target(position)
+        self._send_gripper_control_locked()
+        self._gripper_grasp_event.set()
+
+    @_locked
+    def gripper_grasp_result(self) -> str | None:
+        return self._gripper_control.result if self._gripper_control is not None else None
+
+    @_locked
+    def gripper_grasp_active(self) -> bool:
+        return (
+            self._gripper_control is not None
+            and self._gripper_control.state == GripperControl.CLOSING
+        )
+
+    @_locked
+    def gripper_target_is_closing(self, target: float) -> bool:
+        if self._gripper_control is None:
+            return False
+        position = self._read_gripper_state_cached()[0]
+        return self._gripper_control.is_closing_target(position, target)
+
     def get_gripper_state(self) -> tuple[float, float, float, int]:
         if not self.has_gripper or not self._gripper_name:
             return 0.0, 0.0, 0.0, 0
@@ -661,13 +776,47 @@ class HardwareManager:
                 status = int(st.status_code)
         except Exception:
             status = 0
-        return float(pos), float(vel), float(torque), status
+        self._last_gripper_state = (float(pos), float(vel), float(torque), status)
+        return self._last_gripper_state
+
+    def _read_gripper_state_cached(self) -> tuple[float, float, float, int]:
+        try:
+            st = self._robot._motor_map[self._gripper_name].get_state()
+            if st is not None:
+                self._last_gripper_state = (
+                    float(st.pos),
+                    float(st.vel),
+                    float(st.torq),
+                    int(st.status_code),
+                )
+        except Exception:
+            pass
+        return self._last_gripper_state
 
     def gripper_reached_target(self) -> bool:
         if self._gripper_target_position is None:
             return True
         pos = self.get_gripper_state()[0]
         return abs(pos - self._gripper_target_position) < _GRIPPER_GOAL_TOLERANCE_RAD
+
+    def _send_gripper_control_locked(self) -> None:
+        if self._gripper_control is None:
+            return
+        position, velocity, _, _ = self._read_gripper_state_cached()
+        previous_result = self._gripper_control.result
+        command = self._gripper_control.tick(position, velocity, time.monotonic())
+        self._gripper_group.send_mit(
+            np.array([command.position], dtype=np.float64),
+            vel=np.array([command.velocity], dtype=np.float64),
+            kp=np.array([command.kp], dtype=np.float64),
+            kd=np.array([command.kd], dtype=np.float64),
+            tau=np.array([command.torque], dtype=np.float64),
+        )
+        if (
+            self._gripper_control.result is not None
+            and self._gripper_control.result != previous_result
+        ):
+            self._gripper_grasp_event.set()
 
     @_locked
     def send_gripper_mit_cmd(
@@ -714,6 +863,10 @@ class HardwareManager:
         if not self.has_gripper or not self._gripper_name:
             raise RuntimeError("gripper is not initialized")
         if not allow_endpos and self.control_loop_active:
+            if self._gripper_control.state == GripperControl.CLOSING:
+                position = self._read_gripper_state_cached()[0]
+                self._gripper_control.cancel(position)
+                self._gripper_grasp_event.set()
             self.stop_motion()
             self._robot.stop_control_loop()
             self._endpos_ctrl._running = False
@@ -768,6 +921,11 @@ class HardwareManager:
 
     def _start_endpos_loop(self, target: np.ndarray | None = None) -> None:
         self._configure_groups_for_endpos()
+        if self.has_gripper:
+            gripper_position = self.get_gripper_state()[0]
+            self._gripper_control.set_position(gripper_position)
+            self._gripper_target_position = gripper_position
+            self._gripper_grasp_event.clear()
         if target is None:
             self.hold_current_position()
         else:
@@ -810,6 +968,8 @@ class HardwareManager:
             if not self._control_output_enabled:
                 return
             self._endpos_ctrl._loop_cb(robot, 0.0)
+            if self.has_gripper:
+                self._send_gripper_control_locked()
         finally:
             self._cmd_lock.release()
 

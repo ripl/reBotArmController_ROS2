@@ -8,6 +8,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rebotarm_msgs.action import MoveToPose
 
 from .conversions import pose_to_xyz_rpy
+from .gripper_control import GripperControl
 
 
 class ArmActions:
@@ -50,6 +51,11 @@ class ArmActions:
         )
 
     def gripper_goal_callback(self, _goal_request):
+        if self._hardware.gripper_grasp_active():
+            self._node.get_logger().warn(
+                "rejecting gripper goal: grasp is already running"
+            )
+            return GoalResponse.REJECT
         return self._gate_goal(("GRAVITY_COMP", "SAFE_HOMING"), "gripper")
 
     def _gate_goal(self, blocked, label):
@@ -246,10 +252,19 @@ class ArmActions:
         goal = goal_handle.request.command
         result = GripperCommand.Result()
         feedback = GripperCommand.Feedback()
+        closing = False
 
         try:
-            self._hardware.set_gripper_target(goal.position)
-        except Exception:
+            closing = self._hardware.gripper_target_is_closing(goal.position)
+            if closing:
+                self._hardware.start_gripper_grasp(
+                    target_position=goal.position,
+                    max_effort=goal.max_effort,
+                )
+            else:
+                self._hardware.set_gripper_target(goal.position)
+        except Exception as exc:
+            self._node.get_logger().error(f"gripper command failed: {exc}")
             goal_handle.abort()
             result.position = 0.0
             result.effort = 0.0
@@ -257,11 +272,18 @@ class ArmActions:
             result.reached_goal = False
             return result
 
-        start = time.monotonic()
-        last_pos = self._hardware.get_gripper_state()[0]
+        deadline = time.monotonic() + 5.0
         stalled = False
-        while time.monotonic() - start < 5.0:
+        reached = False
+        completed = False
+        successful = False
+        while time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
+                if closing:
+                    self._hardware.cancel_gripper_grasp()
+                else:
+                    position = self._hardware.get_gripper_state()[0]
+                    self._hardware.set_gripper_target(position)
                 goal_handle.canceled()
                 pos, _, effort, _ = self._hardware.get_gripper_state()
                 result.position = pos
@@ -271,22 +293,39 @@ class ArmActions:
                 return result
 
             pos, _, effort, _ = self._hardware.get_gripper_state()
-            reached = self._hardware.gripper_reached_target()
-            stalled = abs(pos - last_pos) < 1e-4 and abs(effort) >= float(goal.max_effort)
+            if closing:
+                grasp_result = self._hardware.gripper_grasp_result()
+                stalled = grasp_result == GripperControl.CONTACT
+                reached = grasp_result == GripperControl.REACHED_TARGET
+                completed = grasp_result is not None
+                successful = stalled or reached
+            else:
+                reached = self._hardware.gripper_reached_target()
+                completed = reached
+                successful = reached
             feedback.position = pos
             feedback.effort = effort
             feedback.stalled = stalled
             feedback.reached_goal = reached
             goal_handle.publish_feedback(feedback)
-            if reached:
+            if completed:
                 break
-            last_pos = pos
-            time.sleep(0.05)
+            time.sleep(0.02)
+
+        if not completed:
+            if closing:
+                self._hardware.cancel_gripper_grasp(GripperControl.TIMEOUT)
+            else:
+                position = self._hardware.get_gripper_state()[0]
+                self._hardware.set_gripper_target(position)
 
         pos, _, effort, _ = self._hardware.get_gripper_state()
         result.position = pos
         result.effort = effort
         result.stalled = stalled
-        result.reached_goal = self._hardware.gripper_reached_target()
-        goal_handle.succeed()
+        result.reached_goal = reached
+        if completed and successful:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
         return result

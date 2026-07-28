@@ -543,8 +543,10 @@ q / quit    退出
 
 | 型号 | 默认通道 | arm 控制模式 | 夹爪限位 |
 |---|---|---|---|
-| `dm` | `/dev/ttyACM0` | `posvel` | open `-5.0`，close `0.0` |
+| `dm` | `/dev/ttyACM0` | `posvel` | open `-3.0`，close `2.4` |
 | `rs` | `can0` | `mit` | open `5.0`，close `0.0` |
+
+DM 夹爪限位是用户实机标定值；之前的值为 open `-5.0`、close `0.0`。
 
 ---
 
