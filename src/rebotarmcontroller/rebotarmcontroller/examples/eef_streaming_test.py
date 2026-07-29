@@ -77,11 +77,15 @@ class EefStreamingTest(Node):
             self._target_loopback_callback,
             qos,
         )
+        joint_state_qos = QoSProfile(
+            depth=100,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         self.create_subscription(
             JointState,
             "/rebotarm/joint_states",
             self._joint_state_callback,
-            qos,
+            joint_state_qos,
         )
         self.create_subscription(
             ArmStatus,

@@ -11,13 +11,22 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_srvs.srv import SetBool
 from tf2_ros import TransformBroadcaster
 
+from .streaming_diagnostics import StreamingDiagnostics
+
 
 class EefStreamingController:
     """Tracks the latest base-frame end-effector pose setpoint."""
 
-    def __init__(self, node, hardware, namespace: str) -> None:
+    def __init__(
+        self,
+        node,
+        hardware,
+        namespace: str,
+        diagnostics: StreamingDiagnostics | None = None,
+    ) -> None:
         self._node = node
         self._hardware = hardware
+        self._diagnostics = diagnostics
         self._frame_id = str(node.get_parameter("frame_id").value)
         self._target_tf_broadcaster = TransformBroadcaster(node)
         self._lock = threading.Lock()
@@ -27,6 +36,8 @@ class EefStreamingController:
         self._latest_target_time: float | None = None
         self._q_command: np.ndarray | None = None
         self._pose_command: np.ndarray | None = None
+        self._last_target_callback_ns: int | None = None
+        self._last_control_tick_ns: int | None = None
 
         self._rate_hz = self._positive_scalar("eef_streaming.control_rate_hz")
         self._timeout = self._positive_scalar("eef_streaming.target_timeout")
@@ -96,13 +107,26 @@ class EefStreamingController:
         return values
 
     def _target_callback(self, msg: PoseStamped) -> None:
+        callback_ns = time.monotonic_ns()
+        previous_callback_ns = self._last_target_callback_ns
+        self._last_target_callback_ns = callback_ns
         target = self._pose_to_array(msg.pose)
         if target is None:
             self._node.get_logger().warn("ignoring invalid EEF target pose")
             return
         with self._lock:
             self._latest_target = target
-            self._latest_target_time = time.monotonic()
+            self._latest_target_time = callback_ns * 1e-9
+        self._record_diagnostic(
+            "target_received",
+            monotonic_ns=callback_ns,
+            callback_interval_ns=(
+                None
+                if previous_callback_ns is None
+                else callback_ns - previous_callback_ns
+            ),
+            target=target.tolist(),
+        )
         transform = TransformStamped()
         transform.header.stamp = self._node.get_clock().now().to_msg()
         transform.header.frame_id = self._frame_id
@@ -130,11 +154,23 @@ class EefStreamingController:
             with self._lock:
                 self._latest_target = None
                 self._latest_target_time = None
+            if self._diagnostics is not None:
+                self._diagnostics.start(
+                    control_rate_hz=self._rate_hz,
+                    target_timeout_s=self._timeout,
+                    max_linear_velocity=self._max_linear_velocity,
+                    max_angular_velocity=self._max_angular_velocity,
+                    joint_velocity_limits=self._joint_velocity_limits.tolist(),
+                    q_initial=q_current.tolist(),
+                    pose_initial=self._pose_command.tolist(),
+                )
+            self._last_target_callback_ns = None
+            self._last_control_tick_ns = None
             self._active = True
             response.success = True
             response.message = "EEF streaming enabled"
         else:
-            self._stop_streaming()
+            self._stop_streaming("service_disable")
             response.success = True
             response.message = "EEF streaming disabled"
         self._node.publish_arm_status()
@@ -143,47 +179,136 @@ class EefStreamingController:
     def _control_tick(self) -> None:
         if not self._active:
             return
+        tick_start_ns = time.monotonic_ns()
+        previous_tick_ns = self._last_control_tick_ns
+        self._last_control_tick_ns = tick_start_ns
+        tick_interval_ns = (
+            None if previous_tick_ns is None else tick_start_ns - previous_tick_ns
+        )
         with self._lock:
             target = None if self._latest_target is None else self._latest_target.copy()
             target_time = self._latest_target_time
         if target is None or target_time is None:
+            self._record_diagnostic(
+                "control_tick",
+                monotonic_ns=tick_start_ns,
+                tick_interval_ns=tick_interval_ns,
+                outcome="no_target",
+                total_duration_ns=time.monotonic_ns() - tick_start_ns,
+            )
             return
-        if time.monotonic() - target_time > self._timeout:
-            self._stop_streaming()
+        target_age_ns = tick_start_ns - int(target_time * 1e9)
+        if target_age_ns * 1e-9 > self._timeout:
+            self._record_diagnostic(
+                "control_tick",
+                monotonic_ns=tick_start_ns,
+                tick_interval_ns=tick_interval_ns,
+                target_age_ns=target_age_ns,
+                outcome="target_timeout",
+                total_duration_ns=time.monotonic_ns() - tick_start_ns,
+            )
+            self._stop_streaming("target_timeout")
             self._node.get_logger().warn("EEF streaming target timed out; holding position")
             return
         if np.any(target[:3] < self._workspace_min) or np.any(
             target[:3] > self._workspace_max
         ):
-            self._stop_streaming()
+            self._record_diagnostic(
+                "control_tick",
+                monotonic_ns=tick_start_ns,
+                tick_interval_ns=tick_interval_ns,
+                target_age_ns=target_age_ns,
+                outcome="outside_workspace",
+                total_duration_ns=time.monotonic_ns() - tick_start_ns,
+            )
+            self._stop_streaming("outside_workspace")
             self._node.get_logger().warn("EEF streaming target is outside the workspace")
             return
 
         assert self._q_command is not None and self._pose_command is not None
+        q_command = self._q_command.copy()
+        pose_command = self._pose_command.copy()
         limited_pose = self._limit_pose(target)
+        limited_pose_array = self._pose_to_array(limited_pose)
+        solve_start_ns = time.monotonic_ns()
         try:
             q_ik = self._hardware.solve_eef_ik(limited_pose, self._q_command)
         except RuntimeError:
             self._active = False
+            self._record_diagnostic(
+                "control_tick",
+                monotonic_ns=tick_start_ns,
+                tick_interval_ns=tick_interval_ns,
+                target_age_ns=target_age_ns,
+                outcome="streaming_inactive_during_ik",
+                total_duration_ns=time.monotonic_ns() - tick_start_ns,
+            )
+            self._stop_diagnostics("streaming_inactive_during_ik")
             return
+        solve_end_ns = time.monotonic_ns()
         if q_ik is None or np.any(q_ik < self._joint_lower) or np.any(
             q_ik > self._joint_upper
         ):
-            self._stop_streaming()
+            self._record_diagnostic(
+                "control_tick",
+                monotonic_ns=tick_start_ns,
+                tick_interval_ns=tick_interval_ns,
+                target_age_ns=target_age_ns,
+                solve_duration_ns=solve_end_ns - solve_start_ns,
+                outcome="unsafe_ik",
+                total_duration_ns=time.monotonic_ns() - tick_start_ns,
+            )
+            self._stop_streaming("unsafe_ik")
             self._node.get_logger().warn("EEF streaming target has no safe IK solution")
             return
 
         period = 1.0 / self._rate_hz
         max_delta = self._joint_velocity_limits * period
         q_next = self._q_command + np.clip(q_ik - self._q_command, -max_delta, max_delta)
+        set_target_start_ns = time.monotonic_ns()
         try:
-            self._hardware.set_eef_streaming_target(q_next, self._joint_velocity_limits)
+            command_sequence = self._hardware.set_eef_streaming_target(
+                q_next,
+                self._joint_velocity_limits,
+            )
+            set_target_end_ns = time.monotonic_ns()
+            fk_start_ns = set_target_end_ns
             pose_next = self._hardware.pose_from_joint_positions(q_next)
         except RuntimeError:
             self._active = False
+            self._record_diagnostic(
+                "control_tick",
+                monotonic_ns=tick_start_ns,
+                tick_interval_ns=tick_interval_ns,
+                target_age_ns=target_age_ns,
+                outcome="streaming_inactive_during_command",
+                total_duration_ns=time.monotonic_ns() - tick_start_ns,
+            )
+            self._stop_diagnostics("streaming_inactive_during_command")
             return
+        fk_end_ns = time.monotonic_ns()
         self._q_command = q_next
         self._pose_command = self._pose_to_array(pose_next)
+        self._record_diagnostic(
+            "control_tick",
+            monotonic_ns=tick_start_ns,
+            tick_interval_ns=tick_interval_ns,
+            target_age_ns=target_age_ns,
+            target=target.tolist(),
+            pose_command=pose_command.tolist(),
+            limited_pose=(
+                None if limited_pose_array is None else limited_pose_array.tolist()
+            ),
+            q_command=q_command.tolist(),
+            q_ik=q_ik.tolist(),
+            q_next=q_next.tolist(),
+            command_sequence=command_sequence,
+            solve_duration_ns=solve_end_ns - solve_start_ns,
+            set_target_duration_ns=set_target_end_ns - set_target_start_ns,
+            fk_duration_ns=fk_end_ns - fk_start_ns,
+            outcome="commanded",
+            total_duration_ns=fk_end_ns - tick_start_ns,
+        )
 
     def _limit_pose(self, target: np.ndarray) -> Pose:
         assert self._pose_command is not None
@@ -250,9 +375,25 @@ class EefStreamingController:
         scale_end = math.sin(ratio * half_angle) / math.sin(half_angle)
         return scale_start * start + scale_end * end
 
-    def _stop_streaming(self) -> None:
+    def _stop_streaming(self, reason: str) -> None:
         if not self._active:
+            self._stop_diagnostics(reason)
             return
         self._hardware.stop_eef_streaming()
         self._active = False
         self._node.publish_arm_status()
+        self._stop_diagnostics(reason)
+
+    def _record_diagnostic(
+        self,
+        event: str,
+        *,
+        monotonic_ns: int | None = None,
+        **values,
+    ) -> None:
+        if self._diagnostics is not None:
+            self._diagnostics.record(event, monotonic_ns=monotonic_ns, **values)
+
+    def _stop_diagnostics(self, reason: str) -> None:
+        if self._diagnostics is not None:
+            self._diagnostics.stop(reason)

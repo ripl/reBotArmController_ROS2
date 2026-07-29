@@ -12,6 +12,7 @@ from .motor_passthrough import MotorPassthrough
 from .ros_actions import ArmActions
 from .ros_publishers import JointStatePublisher
 from .ros_services import ArmServices
+from .streaming_diagnostics import StreamingDiagnostics
 
 
 class reBotArmController(Node):
@@ -62,11 +63,13 @@ class reBotArmController(Node):
             )
             cmd_arbitration = "reject"
 
+        self.streaming_diagnostics = StreamingDiagnostics(self.get_logger())
         self.hardware = HardwareManager(
             hardware_config=hardware_config,
             model=model,
             channel=channel,
             eef_streaming_ik_max_iter=eef_streaming_ik_max_iter,
+            diagnostics=self.streaming_diagnostics,
         )
         self.hardware.connect()
 
@@ -75,6 +78,7 @@ class reBotArmController(Node):
             self.hardware,
             self.arm_namespace,
             joint_state_rate,
+            diagnostics=self.streaming_diagnostics,
         )
         self.arm_services = ArmServices(self, self.hardware, self.arm_namespace)
         self.arm_actions = ArmActions(self, self.hardware, self.arm_namespace)
@@ -82,6 +86,7 @@ class reBotArmController(Node):
             self,
             self.hardware,
             self.arm_namespace,
+            diagnostics=self.streaming_diagnostics,
         )
         self.motor_passthrough = MotorPassthrough(
             self,

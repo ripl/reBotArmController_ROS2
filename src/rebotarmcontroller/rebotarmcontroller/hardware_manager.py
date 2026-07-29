@@ -10,6 +10,7 @@ import numpy as np
 from .conversions import fk_to_pose, pose_to_xyz_rpy
 from .gripper_control import GripperControl, GripperControlConfig
 from .hardware_config import resolve_hardware_config
+from .streaming_diagnostics import StreamingDiagnostics
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 
@@ -32,8 +33,12 @@ class HardwareManager:
         model: str = "",
         channel: str = "",
         eef_streaming_ik_max_iter: int = 20,
+        diagnostics: StreamingDiagnostics | None = None,
     ) -> None:
         self._cmd_lock = threading.RLock()
+        self._diagnostics = diagnostics
+        self._last_endpos_tick_ns: int | None = None
+        self._eef_command_sequence = 0
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
             model,
@@ -472,13 +477,17 @@ class HardwareManager:
             )
         self.start_endpos_control()
         self._endpos_ctrl._vlim_override = None
+        self._eef_command_sequence = 0
         self.set_state_machine("EEF_STREAMING")
         return self.get_joint_positions(request=True).copy()
 
     def solve_eef_ik(self, pose, q_seed) -> np.ndarray | None:
+        state_lock_request_ns = time.monotonic_ns()
         with self._cmd_lock:
+            state_lock_acquired_ns = time.monotonic_ns()
             if self._state_machine != "EEF_STREAMING":
                 raise RuntimeError("EEF streaming is not active")
+        solve_start_ns = time.monotonic_ns()
         x, y, z, roll, pitch, yaw = pose_to_xyz_rpy(pose)
         q_padded = self._pad_q_for_model(
             self._endpos_ctrl._model,
@@ -500,12 +509,26 @@ class HardwareManager:
             self._eef_streaming_ik_solver_params,
             controlled_joints=len(self.joint_names),
         )
+        solve_end_ns = time.monotonic_ns()
+        self._record_diagnostic(
+            "ik_solve",
+            monotonic_ns=solve_start_ns,
+            state_lock_wait_ns=state_lock_acquired_ns - state_lock_request_ns,
+            duration_ns=solve_end_ns - solve_start_ns,
+            success=bool(result.success),
+            error=float(getattr(result, "error", float("nan"))),
+            iterations=int(getattr(result, "iterations", -1)),
+            q_seed=np.asarray(q_seed, dtype=np.float64).tolist(),
+            q_result=np.asarray(
+                result.q[: len(self.joint_names)], dtype=np.float64
+            ).tolist(),
+        )
         if not result.success:
             return None
         return np.asarray(result.q[: len(self.joint_names)], dtype=np.float64)
 
     @_locked
-    def set_eef_streaming_target(self, positions, velocity_limits) -> None:
+    def set_eef_streaming_target(self, positions, velocity_limits) -> int:
         if self._state_machine != "EEF_STREAMING":
             raise RuntimeError("EEF streaming is not active")
         q_target = np.asarray(positions, dtype=np.float64).reshape(-1)
@@ -515,6 +538,8 @@ class HardwareManager:
         self._endpos_ctrl._q_target[:] = q_target
         self._endpos_ctrl._qd_target[:] = 0.0
         self._endpos_ctrl._vlim_override = vlim.copy()
+        self._eef_command_sequence += 1
+        return self._eef_command_sequence
 
     @_locked
     def stop_eef_streaming(self) -> None:
@@ -961,16 +986,74 @@ class HardwareManager:
 
     def _endpos_loop_cb(self, robot, dt: float) -> None:
         del dt
+        tick_ns = time.monotonic_ns()
+        previous_tick_ns = getattr(self, "_last_endpos_tick_ns", None)
+        self._last_endpos_tick_ns = tick_ns
+        tick_interval_ns = (
+            None if previous_tick_ns is None else tick_ns - previous_tick_ns
+        )
         if not self._cmd_lock.acquire(blocking=False):
+            self._record_diagnostic(
+                "hardware_output",
+                monotonic_ns=tick_ns,
+                tick_interval_ns=tick_interval_ns,
+                lock_acquired=False,
+            )
             return
+        output_enabled = False
+        q_target = None
+        velocity_limits = None
+        command_sequence = None
+        diagnostics = getattr(self, "_diagnostics", None)
+        diagnostics_active = diagnostics is not None and diagnostics.active
+        send_start_ns = time.monotonic_ns()
         try:
-            if not self._control_output_enabled:
+            output_enabled = bool(self._control_output_enabled)
+            if not output_enabled:
                 return
+            if diagnostics_active:
+                command_sequence = self._eef_command_sequence
+                q_target = np.array(
+                    self._endpos_ctrl._q_target,
+                    dtype=np.float64,
+                    copy=True,
+                )
+                velocity_limits = np.asarray(
+                    (
+                        self._endpos_ctrl._vlim_override
+                        if self._endpos_ctrl._vlim_override is not None
+                        else getattr(self._arm_group, "_pv_vlim")
+                    ),
+                    dtype=np.float64,
+                ).copy()
             self._endpos_ctrl._loop_cb(robot, 0.0)
             if self.has_gripper:
                 self._send_gripper_control_locked()
         finally:
+            send_end_ns = time.monotonic_ns()
             self._cmd_lock.release()
+            self._record_diagnostic(
+                "hardware_output",
+                monotonic_ns=tick_ns,
+                tick_interval_ns=tick_interval_ns,
+                lock_acquired=True,
+                output_enabled=output_enabled,
+                command_sequence=command_sequence,
+                send_duration_ns=send_end_ns - send_start_ns,
+                q_target=q_target,
+                velocity_limits=velocity_limits,
+            )
+
+    def _record_diagnostic(
+        self,
+        event: str,
+        *,
+        monotonic_ns: int | None = None,
+        **values,
+    ) -> None:
+        diagnostics = getattr(self, "_diagnostics", None)
+        if diagnostics is not None:
+            diagnostics.record(event, monotonic_ns=monotonic_ns, **values)
 
     def _send_endpos_hold_once(self) -> None:
         if self._arm_control_mode == "mit":

@@ -3,6 +3,8 @@ import time
 import unittest
 from types import SimpleNamespace
 
+import numpy as np
+
 from rebotarmcontroller.gripper_control import (
     GripperControl,
     GripperControlConfig,
@@ -106,6 +108,30 @@ class HardwareGripperLoopTest(unittest.TestCase):
         )
         self.assertTrue(self.manager._gripper_grasp_event.is_set())
         self.assertAlmostEqual(self.group.commands[-1][4], 0.15)
+
+    def test_endpose_tick_records_hardware_output_diagnostics(self) -> None:
+        events = []
+        self.endpose._q_target = np.arange(6, dtype=np.float64)
+        self.endpose._vlim_override = np.full(6, 2.0)
+        self.manager._arm_group = SimpleNamespace(_pv_vlim=np.full(6, 1.0))
+        self.manager._eef_command_sequence = 7
+        self.manager._diagnostics = SimpleNamespace(
+            active=True,
+            record=lambda event, **values: events.append(
+                {"event": event, **values}
+            ),
+        )
+
+        self.manager._endpos_loop_cb(None, 0.002)
+
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["event"], "hardware_output")
+        self.assertTrue(event["lock_acquired"])
+        self.assertEqual(event["command_sequence"], 7)
+        np.testing.assert_array_equal(event["q_target"], np.arange(6))
+        np.testing.assert_array_equal(event["velocity_limits"], np.full(6, 2.0))
+        self.assertGreater(event["send_duration_ns"], 0)
 
 
 if __name__ == "__main__":
