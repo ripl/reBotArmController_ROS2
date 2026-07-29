@@ -24,6 +24,8 @@ setup(
             "MoveTo = rebotarmcontroller.examples.move_to:main",
             "MoveToPose = rebotarmcontroller.examples.move_to_pose:main",
             "EefStreamingTest = rebotarmcontroller.examples.eef_streaming_test:main",
+            "EefTargetPublisherTest = rebotarmcontroller.examples.eef_target_publisher_test:main",
+            "EefTargetSubscriberTest = rebotarmcontroller.examples.eef_target_subscriber_test:main",
             "HardwareSendRateTest = rebotarmcontroller.examples.hardware_send_rate_test:main",
         ],
     },

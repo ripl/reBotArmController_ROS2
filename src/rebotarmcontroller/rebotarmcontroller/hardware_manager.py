@@ -33,10 +33,12 @@ class HardwareManager:
         model: str = "",
         channel: str = "",
         eef_streaming_ik_max_iter: int = 20,
+        output_loop_enabled: bool = True,
         diagnostics: StreamingDiagnostics | None = None,
     ) -> None:
         self._cmd_lock = threading.RLock()
         self._diagnostics = diagnostics
+        self._output_loop_enabled = bool(output_loop_enabled)
         self._last_endpos_tick_ns: int | None = None
         self._eef_command_sequence = 0
         hardware_config_path, hardware_data = resolve_hardware_config(
@@ -213,9 +215,10 @@ class HardwareManager:
                 position = self.get_gripper_state()[0]
                 self._gripper_target_position = position
                 self._gripper_control.set_position(position)
-            self._start_endpos_loop()
+            if self._output_loop_enabled:
+                self._start_endpos_loop()
             self._connected = True
-            self._enabled = True
+            self._enabled = self._output_loop_enabled
         except Exception:
             self._control_output_enabled = False
             self._endpos_ctrl._running = False
@@ -231,11 +234,12 @@ class HardwareManager:
         if not self._connected:
             return
         try:
-            self.safe_home()
+            if self._output_loop_enabled:
+                self.safe_home()
             with self._cmd_lock:
                 self._robot.stop_control_loop()
 
-            if disable_after_safe_home:
+            if self._output_loop_enabled and disable_after_safe_home:
                 self.disable()
 
             with self._cmd_lock:
@@ -952,6 +956,8 @@ class HardwareManager:
         self._start_endpos_loop(target)
 
     def _start_endpos_loop(self, target: np.ndarray | None = None) -> None:
+        if not self._output_loop_enabled:
+            raise RuntimeError("hardware output loop is disabled")
         self._configure_groups_for_endpos()
         if self.has_gripper:
             gripper_position = self.get_gripper_state()[0]

@@ -30,6 +30,7 @@ class JointStatePublisher:
         hardware,
         namespace: str,
         rate_hz: float,
+        enabled: bool = True,
         diagnostics: StreamingDiagnostics | None = None,
     ) -> None:
         self._node = node
@@ -73,12 +74,14 @@ class JointStatePublisher:
                 node.sensor_qos,
                 callback_group=node.reentrant_group,
             )
-        period = 1.0 / max(float(rate_hz), 1.0)
-        self._timer = node.create_timer(
-            period,
-            self.publish,
-            callback_group=self._callback_group,
-        )
+        self._timer = None
+        if enabled:
+            period = 1.0 / max(float(rate_hz), 1.0)
+            self._timer = node.create_timer(
+                period,
+                self.publish,
+                callback_group=self._callback_group,
+            )
         self.publish_status()
 
     def publish(self) -> None:

@@ -19,14 +19,21 @@ def generate_launch_description():
     model = LaunchConfiguration("model")
     channel = LaunchConfiguration("channel")
     joint_state_rate = LaunchConfiguration("joint_state_rate")
+    joint_state_enabled = LaunchConfiguration("joint_state_enabled")
+    hardware_connect_enabled = LaunchConfiguration("hardware_connect_enabled")
+    hardware_output_loop_enabled = LaunchConfiguration("hardware_output_loop_enabled")
+    controller_executor_threads = LaunchConfiguration("controller_executor_threads")
     cmd_arbitration = LaunchConfiguration("cmd_arbitration")
     arm_namespace = LaunchConfiguration("arm_namespace")
     use_rviz = LaunchConfiguration("use_rviz")
     frame_id = LaunchConfiguration("frame_id")
     ee_frame_id = LaunchConfiguration("ee_frame_id")
     disable_after_safe_home = LaunchConfiguration("disable_after_safe_home")
+    eef_streaming_diagnostics_enabled = LaunchConfiguration("eef_streaming_diagnostics_enabled")
     eef_streaming_publish_target_tf = LaunchConfiguration("eef_streaming_publish_target_tf")
     eef_streaming_diagnostics_detail = LaunchConfiguration("eef_streaming_diagnostics_detail")
+    eef_streaming_target_callback_diagnostics = LaunchConfiguration("eef_streaming_target_callback_diagnostics")
+    eef_streaming_internal_target_enabled = LaunchConfiguration("eef_streaming_internal_target_enabled")
 
     urdf_file = PathJoinSubstitution(
         [
@@ -56,14 +63,21 @@ def generate_launch_description():
             DeclareLaunchArgument("model", default_value=""),
             DeclareLaunchArgument("channel", default_value=""),
             DeclareLaunchArgument("joint_state_rate", default_value="100.0"),
+            DeclareLaunchArgument("joint_state_enabled", default_value="true"),
+            DeclareLaunchArgument("hardware_connect_enabled", default_value="true"),
+            DeclareLaunchArgument("hardware_output_loop_enabled", default_value="true"),
+            DeclareLaunchArgument("controller_executor_threads", default_value="1"),
             DeclareLaunchArgument("cmd_arbitration", default_value="reject"),
             DeclareLaunchArgument("arm_namespace", default_value="rebotarm"),
             DeclareLaunchArgument("use_rviz", default_value="false"),
             DeclareLaunchArgument("frame_id", default_value="base_link"),
             DeclareLaunchArgument("ee_frame_id", default_value="end_link"),
             DeclareLaunchArgument("disable_after_safe_home", default_value="true"),
+            DeclareLaunchArgument("eef_streaming_diagnostics_enabled", default_value="true"),
             DeclareLaunchArgument("eef_streaming_publish_target_tf", default_value="true"),
             DeclareLaunchArgument("eef_streaming_diagnostics_detail", default_value="true"),
+            DeclareLaunchArgument("eef_streaming_target_callback_diagnostics", default_value="false"),
+            DeclareLaunchArgument("eef_streaming_internal_target_enabled", default_value="false"),
             Node(
                 package="rebotarmcontroller",
                 executable="reBotArmController",
@@ -77,6 +91,19 @@ def generate_launch_description():
                         "model": model,
                         "channel": channel,
                         "joint_state_rate": joint_state_rate,
+                        "joint_state_enabled": ParameterValue(
+                            joint_state_enabled,
+                            value_type=bool,
+                        ),
+                        "hardware_connect_enabled": ParameterValue(
+                            hardware_connect_enabled,
+                            value_type=bool,
+                        ),
+                        "hardware_output_loop_enabled": ParameterValue(
+                            hardware_output_loop_enabled,
+                            value_type=bool,
+                        ),
+                        "controller_executor_threads": controller_executor_threads,
                         "cmd_arbitration": cmd_arbitration,
                         "arm_namespace": arm_namespace,
                         "frame_id": frame_id,
@@ -85,12 +112,24 @@ def generate_launch_description():
                             disable_after_safe_home,
                             value_type=bool,
                         ),
+                        "eef_streaming.diagnostics_enabled": ParameterValue(
+                            eef_streaming_diagnostics_enabled,
+                            value_type=bool,
+                        ),
                         "eef_streaming.publish_target_tf": ParameterValue(
                             eef_streaming_publish_target_tf,
                             value_type=bool,
                         ),
                         "eef_streaming.diagnostics_detail": ParameterValue(
                             eef_streaming_diagnostics_detail,
+                            value_type=bool,
+                        ),
+                        "eef_streaming.target_callback_diagnostics_enabled": ParameterValue(
+                            eef_streaming_target_callback_diagnostics,
+                            value_type=bool,
+                        ),
+                        "eef_streaming.internal_target_enabled": ParameterValue(
+                            eef_streaming_internal_target_enabled,
                             value_type=bool,
                         ),
                     }

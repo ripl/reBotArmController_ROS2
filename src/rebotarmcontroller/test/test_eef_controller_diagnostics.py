@@ -65,6 +65,7 @@ class EefControllerDiagnosticsTest(unittest.TestCase):
         controller._latest_target = target
         controller._latest_target_time = time.monotonic()
         controller._last_control_tick_ns = None
+        controller._internal_target_enabled = False
         controller._q_command = np.zeros(6)
         controller._pose_command = np.array(
             [0.3, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
