@@ -1,7 +1,7 @@
 reBotArmController:
   ros__parameters:
     arm_namespace: rebotarm
-    joint_state_rate: 100.0
+    joint_state_rate: 20.0
     cmd_arbitration: reject
     hardware_config: ""
     model: ""

@@ -427,21 +427,22 @@ rebotarm_msgs/srv/GripperCommand
 ```
 
 说明：用位置控制打开夹爪。`position` 为目标夹爪电机角度，单位 rad；传 `0.0`
-时使用 controller 默认打开位置。`timeout` 小于等于 `0.0` 时使用默认超时。
+时使用 controller 默认打开位置。该 service 只启动夹爪动作并立即返回，不等待到位；
+后续动作由 controller 内部 hardware output loop 持续推进。`timeout` 当前保留为兼容字段。
 
 请求：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `position` | `float64` | 目标夹爪电机位置，rad；`0.0` 表示默认打开位置 |
-| `timeout` | `float64` | 等待到位超时，s |
+| `timeout` | `float64` | 兼容字段；该 service 当前不阻塞等待 |
 
 响应：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `success` | `bool` | 是否在超时内到达目标 |
-| `reached_position` | `float64` | 实际夹爪电机位置，rad |
+| `success` | `bool` | 命令是否成功启动 |
+| `reached_position` | `float64` | service 返回时读取到的夹爪电机位置，rad |
 | `message` | `string` | 结果说明 |
 
 示例：
@@ -459,14 +460,15 @@ ros2 service call /rebotarm/gripper/open rebotarm_msgs/srv/GripperCommand \
 rebotarm_msgs/srv/GripperCommand
 ```
 
-说明：使用 controller 内部的 500 Hz MIT 抓取状态机。`position` 为目标夹爪电机
-角度，单位 rad；传 `0.0` 时使用默认闭合位置。`timeout` 小于等于 `0.0` 时使用
-默认值 3 s。
+说明：启动 controller 内部的 MIT 抓取状态机。`position` 为目标夹爪电机角度，
+单位 rad；传 `0.0` 时使用默认闭合位置。该 service 只启动抓取并立即返回，不等待
+接触/到位；后续接触判断和保持由 controller 内部 hardware output loop 持续执行。
+`timeout` 当前保留为兼容字段。
 
 - `CLOSING`：`kp=0`、`kd=close_kd`，按 `min(close_torque, torque_limit)` 输出闭合力矩。
 - 移动超过 `startup_distance` 后，低速持续 `stall_duration` 即判定接触并进入 `HOLDING`。
 - `HOLDING`：在接触位置使用 `move_kp` / `move_kd` 和 `hold_torque` 保持夹持。
-- 到达闭合位置或检测到接触都返回成功；超时则停在当前位置并返回失败。
+- 到达闭合位置或检测到接触后会在内部状态机中记录结果；service 返回成功仅表示命令已启动。
 
 当前 DM 夹爪的用户实机标定参数（之前 open 为 `-5.0`、close 为 `0.0`）：
 

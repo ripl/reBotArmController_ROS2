@@ -84,11 +84,11 @@ class DemoGripperControl(Node):
             return False
         if not result.success:
             self.get_logger().warn(
-                f"{label} not reached, current={result.reached_position:.3f}rad"
+                f"{label} failed: {result.message}, current={result.reached_position:.3f}rad"
             )
             return False
         self.get_logger().info(
-            f"{label} reached, current={result.reached_position:.3f}rad"
+            f"{label} accepted: {result.message}, current={result.reached_position:.3f}rad"
         )
         return True
 

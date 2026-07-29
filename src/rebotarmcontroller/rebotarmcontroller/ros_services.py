@@ -9,7 +9,6 @@ from rebotarm_msgs.srv import (
 from std_srvs.srv import Trigger
 
 from .conversions import pose_to_xyz_rpy
-from .gripper_control import GripperControl
 
 
 class ArmServices:
@@ -135,24 +134,13 @@ class ArmServices:
                 if request.position == 0.0
                 else float(request.position)
             )
-            result, position = self._hardware.grasp_gripper(
+            self._hardware.start_gripper_grasp(
                 target_position=target,
-                timeout=request.timeout if request.timeout > 0.0 else 3.0,
+                max_effort=None,
             )
-            response.success = result in (
-                GripperControl.CONTACT,
-                GripperControl.REACHED_TARGET,
-            )
-            response.reached_position = float(position)
-            messages = {
-                GripperControl.CONTACT: "gripper close complete: object contact",
-                GripperControl.REACHED_TARGET: (
-                    "gripper close complete: target reached without contact"
-                ),
-                GripperControl.TIMEOUT: "gripper close timeout",
-                GripperControl.CANCELED: "gripper close canceled",
-            }
-            response.message = messages.get(result, f"gripper close failed: {result}")
+            response.success = True
+            response.reached_position = float(self._hardware.get_gripper_state()[0])
+            response.message = "gripper close started"
         except Exception as exc:
             response.success = False
             response.reached_position = 0.0
@@ -165,15 +153,10 @@ class ArmServices:
             target = (
                 default_target if request.position == 0.0 else float(request.position)
             )
-            success, position = self._hardware.set_gripper_position(
-                target,
-                timeout=request.timeout if request.timeout > 0.0 else 3.0,
-            )
-            response.success = bool(success)
-            response.reached_position = float(position)
-            response.message = (
-                f"gripper {label} complete" if success else f"gripper {label} timeout"
-            )
+            self._hardware.set_gripper_target(target)
+            response.success = True
+            response.reached_position = float(self._hardware.get_gripper_state()[0])
+            response.message = f"gripper {label} started"
         except Exception as exc:
             response.success = False
             response.reached_position = 0.0

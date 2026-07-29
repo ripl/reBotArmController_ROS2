@@ -493,8 +493,7 @@ SingleThreadedExecutor()
 
 ```bash
 ros2 launch rebotarm_bringup bringup.launch.py \
-  joint_state_rate:=1.0 \
-  eef_streaming_publish_target_tf:=false
+  joint_state_rate:=20.0
 ```
 
 如需回退到旧executor行为，可显式传入：
@@ -502,6 +501,65 @@ ros2 launch rebotarm_bringup bringup.launch.py \
 ```bash
 controller_executor_threads:=4
 ```
+
+## 后续清理和运行参数
+
+确认根因后，已删除只用于隔离测试的生产参数和代码：
+
+- `hardware_connect_enabled`
+- `hardware_output_loop_enabled`
+- `eef_streaming.target_callback_diagnostics_enabled`
+- `eef_streaming.internal_target_enabled` 以及内部target的 x/y/z/duration 参数
+- `_DisconnectedHardware`
+- controller内部生成target逻辑
+- callback-only独立diagnostic session
+
+保留的运行/诊断参数默认值：
+
+| 参数 | 默认值 | 说明 |
+|---|---:|---|
+| `controller_executor_threads` | `1` | 默认单线程executor；可显式设为4回退对比 |
+| `joint_state_rate` | `20.0` | joint-state发布频率，供UI/RViz/状态监控使用 |
+| `joint_state_enabled` | `true` | 是否启用周期性joint-state发布 |
+| `eef_streaming.diagnostics_enabled` | `false` | 默认不记录controller JSONL诊断 |
+| `eef_streaming.diagnostics_detail` | `false` | 默认不记录大数组细节 |
+| `eef_streaming.publish_target_tf` | `false` | 默认不从controller发布 `eef_target` TF |
+
+推荐实际运行rate：
+
+- EEF streaming control loop：50 Hz。
+- hardware output/send loop：使用SDK默认endpos loop即可，实测约50 Hz时已经稳定；不建议为teleop追求500 Hz。
+- joint-state publish：20 Hz。它不参与EEF streaming控制闭环，主要用于显示和状态监控。
+
+## Gripper close 期间 EEF streaming timeout
+
+修复executor后，phone teleop按 Volume Down 关闭夹爪时曾出现：
+
+```text
+EEF streaming target timed out; holding position
+gripper close complete ...
+arm left EEF_STREAMING: IDLE
+```
+
+原因：
+
+- controller现在默认使用单线程executor。
+- `/rebotarm/gripper/close` service 原来会同步等待夹爪接触/到位/超时。
+- 等待期间executor被该service callback占住，无法处理新的 `/eef_target_pose` callback。
+- EEF control loop专用线程继续运行，但latest target时间戳超过 `eef_streaming.target_timeout`，于是退出EEF streaming。
+
+修复：
+
+- `/rebotarm/gripper/open` 改为调用 `set_gripper_target()` 后立即返回。
+- `/rebotarm/gripper/close` 改为调用 `start_gripper_grasp()` 后立即返回。
+- phone teleop日志从 `complete` 改为 `accepted/started` 语义。
+
+没有删除的逻辑：
+
+- 接触检测仍在 `GripperControl.tick()` 中执行。
+- `HardwareManager._endpos_loop_cb()` 每个hardware output tick都会调用 `_next_gripper_control_command_locked()`。
+- 检测到低速stall/contact后，`GripperControl` 仍会进入 `HOLDING`，并持续输出hold torque。
+- 变化只是service不再阻塞等待这个过程完成。
 
 ## 不纳入对比的日志
 

@@ -522,13 +522,18 @@ Common launch parameters:
 | `hardware_config` | built-in `rebotarm_hardware.yaml` | ROS2 hardware config path |
 | `model` | empty string | Use `default_model` when empty; set `dm` or `rs` explicitly |
 | `channel` | empty string | Use YAML value when empty; override communication channel when set |
-| `joint_state_rate` | `100.0` | Publish rate for `/rebotarm/joint_states` |
+| `joint_state_rate` | `20.0` | Publish rate for `/rebotarm/joint_states` |
+| `joint_state_enabled` | `true` | Enable periodic joint-state publishing |
+| `controller_executor_threads` | `1` | ROS executor threads; `1` uses the stable single-threaded executor path |
 | `cmd_arbitration` | `reject` | Low-level command arbitration during arm trajectory execution |
 | `arm_namespace` | `rebotarm` | ROS namespace prefix |
 | `frame_id` | `base_link` | Base frame ID reserved for TF, perception and planning |
 | `ee_frame_id` | `end_link` | End-effector frame ID reserved for TF, perception and planning |
 | `use_rviz` | `false` | Start bringup RViz |
 | `disable_after_safe_home` | `true` | Controls whether motors are disabled after safe home completes |
+| `eef_streaming_diagnostics_enabled` | `false` | Enable controller-side EEF streaming JSONL diagnostics |
+| `eef_streaming_publish_target_tf` | `false` | Publish the `eef_target` TF frame from incoming streaming targets |
+| `eef_streaming_diagnostics_detail` | `false` | Include detailed target/IK/joint arrays in EEF streaming diagnostics |
 
 Model defaults in `rebotarm_hardware.yaml`:
 

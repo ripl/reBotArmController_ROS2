@@ -14,8 +14,6 @@ def generate_launch_description():
     channel = LaunchConfiguration("channel")
     joint_state_rate = LaunchConfiguration("joint_state_rate")
     joint_state_enabled = LaunchConfiguration("joint_state_enabled")
-    hardware_connect_enabled = LaunchConfiguration("hardware_connect_enabled")
-    hardware_output_loop_enabled = LaunchConfiguration("hardware_output_loop_enabled")
     controller_executor_threads = LaunchConfiguration("controller_executor_threads")
     cmd_arbitration = LaunchConfiguration("cmd_arbitration")
     arm_namespace = LaunchConfiguration("arm_namespace")
@@ -23,8 +21,6 @@ def generate_launch_description():
     eef_streaming_diagnostics_enabled = LaunchConfiguration("eef_streaming_diagnostics_enabled")
     eef_streaming_publish_target_tf = LaunchConfiguration("eef_streaming_publish_target_tf")
     eef_streaming_diagnostics_detail = LaunchConfiguration("eef_streaming_diagnostics_detail")
-    eef_streaming_target_callback_diagnostics = LaunchConfiguration("eef_streaming_target_callback_diagnostics")
-    eef_streaming_internal_target_enabled = LaunchConfiguration("eef_streaming_internal_target_enabled")
 
     return LaunchDescription(
         [
@@ -38,17 +34,13 @@ def generate_launch_description():
             DeclareLaunchArgument("channel", default_value=""),
             DeclareLaunchArgument("joint_state_rate", default_value="100.0"),
             DeclareLaunchArgument("joint_state_enabled", default_value="true"),
-            DeclareLaunchArgument("hardware_connect_enabled", default_value="true"),
-            DeclareLaunchArgument("hardware_output_loop_enabled", default_value="true"),
             DeclareLaunchArgument("controller_executor_threads", default_value="1"),
             DeclareLaunchArgument("cmd_arbitration", default_value="reject"),
             DeclareLaunchArgument("arm_namespace", default_value="rebotarm"),
             DeclareLaunchArgument("disable_after_safe_home", default_value="true"),
-            DeclareLaunchArgument("eef_streaming_diagnostics_enabled", default_value="true"),
-            DeclareLaunchArgument("eef_streaming_publish_target_tf", default_value="true"),
-            DeclareLaunchArgument("eef_streaming_diagnostics_detail", default_value="true"),
-            DeclareLaunchArgument("eef_streaming_target_callback_diagnostics", default_value="false"),
-            DeclareLaunchArgument("eef_streaming_internal_target_enabled", default_value="false"),
+            DeclareLaunchArgument("eef_streaming_diagnostics_enabled", default_value="false"),
+            DeclareLaunchArgument("eef_streaming_publish_target_tf", default_value="false"),
+            DeclareLaunchArgument("eef_streaming_diagnostics_detail", default_value="false"),
             Node(
                 package="rebotarmcontroller",
                 executable="reBotArmController",
@@ -63,14 +55,6 @@ def generate_launch_description():
                         "joint_state_rate": joint_state_rate,
                         "joint_state_enabled": ParameterValue(
                             joint_state_enabled,
-                            value_type=bool,
-                        ),
-                        "hardware_connect_enabled": ParameterValue(
-                            hardware_connect_enabled,
-                            value_type=bool,
-                        ),
-                        "hardware_output_loop_enabled": ParameterValue(
-                            hardware_output_loop_enabled,
                             value_type=bool,
                         ),
                         "controller_executor_threads": controller_executor_threads,
@@ -90,14 +74,6 @@ def generate_launch_description():
                         ),
                         "eef_streaming.diagnostics_detail": ParameterValue(
                             eef_streaming_diagnostics_detail,
-                            value_type=bool,
-                        ),
-                        "eef_streaming.target_callback_diagnostics_enabled": ParameterValue(
-                            eef_streaming_target_callback_diagnostics,
-                            value_type=bool,
-                        ),
-                        "eef_streaming.internal_target_enabled": ParameterValue(
-                            eef_streaming_internal_target_enabled,
                             value_type=bool,
                         ),
                     }

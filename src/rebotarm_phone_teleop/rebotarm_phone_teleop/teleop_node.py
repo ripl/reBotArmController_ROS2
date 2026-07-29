@@ -295,8 +295,8 @@ class PhoneEefTeleop(Node):
             return
         if response.success:
             self.get_logger().info(
-                f"gripper {label} complete at "
-                f"{response.reached_position:.3f} rad"
+                f"gripper {label} accepted: {response.message}; "
+                f"current={response.reached_position:.3f} rad"
             )
         else:
             self.get_logger().warn(

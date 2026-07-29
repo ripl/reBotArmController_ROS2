@@ -27,7 +27,6 @@ class EefStreamingController:
         self._node = node
         self._hardware = hardware
         self._diagnostics = diagnostics
-        self._target_callback_diagnostics: StreamingDiagnostics | None = None
         self._frame_id = str(node.get_parameter("frame_id").value)
         self._target_tf_broadcaster = TransformBroadcaster(node)
         self._lock = threading.Lock()
@@ -41,32 +40,10 @@ class EefStreamingController:
         self._last_control_tick_ns: int | None = None
         self._control_stop = threading.Event()
         self._control_thread: threading.Thread | None = None
-        self._stream_start_ns: int | None = None
 
         self._rate_hz = self._positive_scalar("eef_streaming.control_rate_hz")
         self._publish_target_tf = self._bool_param("eef_streaming.publish_target_tf")
         self._diagnostics_detail = self._bool_param("eef_streaming.diagnostics_detail")
-        self._target_callback_diagnostics_enabled = self._bool_param(
-            "eef_streaming.target_callback_diagnostics_enabled"
-        )
-        self._internal_target_enabled = self._bool_param(
-            "eef_streaming.internal_target_enabled"
-        )
-        self._internal_target_x = float(
-            node.get_parameter("eef_streaming.internal_target_x").value
-        )
-        self._internal_target_y_start = float(
-            node.get_parameter("eef_streaming.internal_target_y_start").value
-        )
-        self._internal_target_y_end = float(
-            node.get_parameter("eef_streaming.internal_target_y_end").value
-        )
-        self._internal_target_z = float(
-            node.get_parameter("eef_streaming.internal_target_z").value
-        )
-        self._internal_target_duration = self._positive_scalar(
-            "eef_streaming.internal_target_duration"
-        )
         self._timeout = self._positive_scalar("eef_streaming.target_timeout")
         self._max_linear_velocity = self._positive_scalar(
             "eef_streaming.max_linear_velocity"
@@ -89,36 +66,20 @@ class EefStreamingController:
         if np.any(self._joint_lower >= self._joint_upper):
             raise ValueError("eef streaming joint_limit_margin is too large")
 
-        self._subscription = None
-        target_topic = f"/{namespace}/eef_target_pose"
-        if not self._internal_target_enabled:
-            qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-            self._subscription = node.create_subscription(
-                PoseStamped,
-                target_topic,
-                self._target_callback,
-                qos,
-                callback_group=node.reentrant_group,
-            )
+        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self._subscription = node.create_subscription(
+            PoseStamped,
+            f"/{namespace}/eef_target_pose",
+            self._target_callback,
+            qos,
+            callback_group=node.reentrant_group,
+        )
         self._enable_service = node.create_service(
             SetBool,
             f"/{namespace}/eef_streaming/enable",
             self._enable_callback,
             callback_group=self._control_group,
         )
-        if (
-            self._target_callback_diagnostics_enabled
-        ):
-            self._target_callback_diagnostics = StreamingDiagnostics(
-                node.get_logger()
-            )
-            self._target_callback_diagnostics.start(
-                mode="target_callback_only",
-                target_topic=target_topic,
-                publish_target_tf=self._publish_target_tf,
-                diagnostics_detail=self._diagnostics_detail,
-                internal_target_enabled=self._internal_target_enabled,
-            )
 
     def _positive_scalar(self, name: str) -> float:
         value = float(self._node.get_parameter(name).value)
@@ -172,12 +133,6 @@ class EefStreamingController:
             monotonic_ns=callback_ns,
             **values,
         )
-        if self._target_callback_diagnostics is not None:
-            self._target_callback_diagnostics.record(
-                "target_received",
-                monotonic_ns=callback_ns,
-                **values,
-            )
         if not self._publish_target_tf:
             return
         transform = TransformStamped()
@@ -207,7 +162,6 @@ class EefStreamingController:
             with self._lock:
                 self._latest_target = None
                 self._latest_target_time = None
-            self._stop_target_callback_diagnostics("streaming_enable")
             if self._diagnostics is not None:
                 if self._diagnostics.active:
                     self._diagnostics.stop("streaming_enable")
@@ -221,11 +175,9 @@ class EefStreamingController:
                     pose_initial=self._pose_command.tolist(),
                     publish_target_tf=self._publish_target_tf,
                     diagnostics_detail=self._diagnostics_detail,
-                    internal_target_enabled=self._internal_target_enabled,
                 )
             self._last_target_callback_ns = None
             self._last_control_tick_ns = None
-            self._stream_start_ns = time.monotonic_ns()
             self._active = True
             self._start_control_thread()
             response.success = True
@@ -242,8 +194,6 @@ class EefStreamingController:
             self._stop_streaming("shutdown")
         else:
             self._stop_control_thread()
-            if self._target_callback_diagnostics_enabled:
-                self._stop_target_callback_diagnostics("shutdown")
 
     def _start_control_thread(self) -> None:
         if self._control_thread is not None and self._control_thread.is_alive():
@@ -328,13 +278,9 @@ class EefStreamingController:
         tick_interval_ns = (
             None if previous_tick_ns is None else tick_start_ns - previous_tick_ns
         )
-        if self._internal_target_enabled:
-            target = self._internal_target(tick_start_ns)
-            target_time = tick_start_ns * 1e-9
-        else:
-            with self._lock:
-                target = None if self._latest_target is None else self._latest_target.copy()
-                target_time = self._latest_target_time
+        with self._lock:
+            target = None if self._latest_target is None else self._latest_target.copy()
+            target_time = self._latest_target_time
         if target is None or target_time is None:
             self._record_diagnostic(
                 "control_tick",
@@ -488,27 +434,6 @@ class EefStreamingController:
         )
         return pose
 
-    def _internal_target(self, now_ns: int) -> np.ndarray:
-        start_ns = self._stream_start_ns if self._stream_start_ns is not None else now_ns
-        elapsed = max(0.0, (now_ns - start_ns) * 1e-9)
-        progress = min(1.0, elapsed / self._internal_target_duration)
-        sine_progress = 0.5 - 0.5 * math.cos(math.pi * progress)
-        y = self._internal_target_y_start + (
-            self._internal_target_y_end - self._internal_target_y_start
-        ) * sine_progress
-        return np.array(
-            [
-                self._internal_target_x,
-                y,
-                self._internal_target_z,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ],
-            dtype=np.float64,
-        )
-
     @staticmethod
     def _pose_to_array(pose: Pose) -> np.ndarray | None:
         values = np.array(
@@ -575,8 +500,3 @@ class EefStreamingController:
     def _stop_diagnostics(self, reason: str) -> None:
         if self._diagnostics is not None:
             self._diagnostics.stop(reason)
-
-    def _stop_target_callback_diagnostics(self, reason: str) -> None:
-        if self._target_callback_diagnostics is not None:
-            self._target_callback_diagnostics.stop(reason)
-            self._target_callback_diagnostics = None

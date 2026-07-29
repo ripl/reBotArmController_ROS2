@@ -541,13 +541,18 @@ q / quit    退出
 | `hardware_config` | bringup 内置 `rebotarm_hardware.yaml` | ROS2 上层硬件配置路径 |
 | `model` | 空字符串 | 留空使用 `default_model`，可设为 `dm` 或 `rs` |
 | `channel` | 空字符串 | 留空使用 YAML，非空时覆盖通信通道 |
-| `joint_state_rate` | `100.0` | `/rebotarm/joint_states` 发布频率 |
+| `joint_state_rate` | `20.0` | `/rebotarm/joint_states` 发布频率 |
+| `joint_state_enabled` | `true` | 是否启用周期性 joint-state 发布 |
+| `controller_executor_threads` | `1` | ROS executor 线程数；`1` 使用更稳定的单线程 executor |
 | `cmd_arbitration` | `reject` | 轨迹运行中 arm joint 低层 cmd 仲裁，`reject` 或 `preempt`；gripper 低层 cmd 不抢占 arm 轨迹 |
 | `arm_namespace` | `rebotarm` | ROS 命名空间前缀 |
 | `frame_id` | `base_link` | 机械臂基座坐标系，预留给 TF、视觉和规划集成 |
 | `ee_frame_id` | `end_link` | 末端坐标系，预留给 TF、视觉和规划集成 |
 | `use_rviz` | `false` | 是否启动 bringup RViz |
 | `disable_after_safe_home` | `true` | 该参数控制 safe home 完成后是否失能电机 |
+| `eef_streaming_diagnostics_enabled` | `false` | 是否启用 controller 侧 EEF streaming JSONL 诊断 |
+| `eef_streaming_publish_target_tf` | `false` | 是否根据 streaming target 发布 `eef_target` TF |
+| `eef_streaming_diagnostics_detail` | `false` | EEF streaming 诊断中是否记录 target/IK/joint 数组细节 |
 
 `rebotarm_hardware.yaml` 默认型号配置：
 
