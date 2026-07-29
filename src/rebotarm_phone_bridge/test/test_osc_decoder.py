@@ -30,8 +30,8 @@ class OscDecoderTests(unittest.TestCase):
     def test_decodes_phone_pose_bundle_in_order(self):
         packet = bundle(
             message("/phone/camera/session_id", "s", "session-123"),
-            message("/lota/camera/position", "fff", 1.0, 2.0, 3.0),
-            message("/lota/camera/rotation", "ffff", 0.0, 0.0, 0.0, 1.0),
+            message("/phone/camera/position", "fff", 1.0, 2.0, 3.0),
+            message("/phone/camera/rotation", "ffff", 0.0, 0.0, 0.0, 1.0),
         )
 
         decoded = decode_packet(packet)
@@ -40,8 +40,8 @@ class OscDecoderTests(unittest.TestCase):
             [item.address for item in decoded],
             [
                 "/phone/camera/session_id",
-                "/lota/camera/position",
-                "/lota/camera/rotation",
+                "/phone/camera/position",
+                "/phone/camera/rotation",
             ],
         )
         self.assertEqual(decoded[0].arguments, ("session-123",))

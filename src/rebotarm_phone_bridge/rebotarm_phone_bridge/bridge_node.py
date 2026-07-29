@@ -196,8 +196,8 @@ class PhoneTrackingBridge(Node):
     def _handle_message(self, message: OscMessage) -> None:
         handlers = {
             "/phone/camera/session_id": self._handle_session_id,
-            "/lota/camera/position": self._handle_position,
-            "/lota/camera/rotation": self._handle_rotation,
+            "/phone/camera/position": self._handle_position,
+            "/phone/camera/rotation": self._handle_rotation,
             "/phone/input/button": self._handle_button,
         }
         handler = handlers.get(message.address)
@@ -236,10 +236,10 @@ class PhoneTrackingBridge(Node):
         try:
             position = np.asarray(arguments, dtype=np.float64)
         except (TypeError, ValueError):
-            self._reject_packet("invalid /lota/camera/position")
+            self._reject_packet("invalid /phone/camera/position")
             return
         if position.shape != (3,) or not np.all(np.isfinite(position)):
-            self._reject_packet("invalid /lota/camera/position")
+            self._reject_packet("invalid /phone/camera/position")
             return
         self._pending_position = position
 
