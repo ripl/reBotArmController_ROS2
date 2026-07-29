@@ -28,8 +28,13 @@ class _FakeMotor:
 class _FakeGripperGroup:
     def __init__(self) -> None:
         self.commands = []
+        self.send_entered = None
+        self.send_release = None
 
     def send_mit(self, position, *, vel, kp, kd, tau) -> None:
+        if self.send_entered is not None:
+            self.send_entered.set()
+            self.send_release.wait(timeout=1.0)
         self.commands.append(
             (
                 float(position[0]),
@@ -41,18 +46,51 @@ class _FakeGripperGroup:
         )
 
 
+class _FakeArmGroup:
+    def __init__(self) -> None:
+        self.joint_names = [f"joint{index}" for index in range(1, 7)]
+        self._pv_vlim = np.full(6, 1.0)
+        self._mit_kp = np.full(6, 10.0)
+        self._mit_kd = np.full(6, 1.0)
+        self.commands = []
+        self.mit_commands = []
+        self.feedback_requests = []
+        self.send_entered = None
+        self.send_release = None
+
+    def send_pos_vel(self, position, *, vlim) -> None:
+        if self.send_entered is not None:
+            self.send_entered.set()
+            self.send_release.wait(timeout=1.0)
+        self.commands.append(
+            (np.array(position, copy=True), np.array(vlim, copy=True))
+        )
+
+    def get_positions(self, *, request_feedback) -> np.ndarray:
+        self.feedback_requests.append(request_feedback)
+        return np.zeros(6)
+
+    def send_mit(self, position, *, vel, kp, kd, tau) -> None:
+        self.mit_commands.append(
+            tuple(
+                np.array(value, copy=True)
+                for value in (position, vel, kp, kd, tau)
+            )
+        )
+
+
 class _FakeEndPose:
     def __init__(self) -> None:
-        self.calls = 0
         self._has_gripper = False
-
-    def _loop_cb(self, _robot, _dt) -> None:
-        self.calls += 1
+        self._q_target = np.zeros(6)
+        self._qd_target = np.zeros(6)
+        self._vlim_override = None
 
 
 class HardwareGripperLoopTest(unittest.TestCase):
     def setUp(self) -> None:
         motor = _FakeMotor(-4.5, 0.2)
+        self.arm_group = _FakeArmGroup()
         self.group = _FakeGripperGroup()
         self.endpose = _FakeEndPose()
         self.manager = HardwareManager.__new__(HardwareManager)
@@ -63,8 +101,12 @@ class HardwareGripperLoopTest(unittest.TestCase):
             _motor_map={"gripper": motor},
         )
         self.manager._gripper_name = "gripper"
+        self.manager._arm_group = self.arm_group
+        self.manager._arm_control_mode = "posvel"
         self.manager._gripper_group = self.group
         self.manager._endpos_ctrl = self.endpose
+        self.manager._eef_command_sequence = 0
+        self.manager._diagnostics = None
         self.manager._gripper_grasp_event = threading.Event()
         self.manager._last_gripper_state = (-5.0, 0.0, 0.0, 1)
         self.manager._gripper_control = GripperControl(
@@ -88,7 +130,7 @@ class HardwareGripperLoopTest(unittest.TestCase):
     def test_endpose_tick_sends_one_torque_limited_gripper_command(self) -> None:
         self.manager._endpos_loop_cb(None, 0.002)
 
-        self.assertEqual(self.endpose.calls, 1)
+        self.assertEqual(len(self.arm_group.commands), 1)
         self.assertEqual(len(self.group.commands), 1)
         _, _, kp, kd, torque = self.group.commands[0]
         self.assertEqual(kp, 0.0)
@@ -113,7 +155,6 @@ class HardwareGripperLoopTest(unittest.TestCase):
         events = []
         self.endpose._q_target = np.arange(6, dtype=np.float64)
         self.endpose._vlim_override = np.full(6, 2.0)
-        self.manager._arm_group = SimpleNamespace(_pv_vlim=np.full(6, 1.0))
         self.manager._eef_command_sequence = 7
         self.manager._diagnostics = SimpleNamespace(
             active=True,
@@ -132,6 +173,67 @@ class HardwareGripperLoopTest(unittest.TestCase):
         np.testing.assert_array_equal(event["q_target"], np.arange(6))
         np.testing.assert_array_equal(event["velocity_limits"], np.full(6, 2.0))
         self.assertGreater(event["send_duration_ns"], 0)
+        self.assertGreater(event["snapshot_duration_ns"], 0)
+
+    def test_endpose_tick_preserves_mit_gravity_feedforward(self) -> None:
+        self.manager._arm_control_mode = "mit"
+        self.endpose._use_gravity_ff = True
+        self.manager._gc_model = object()
+        self.manager._gc_data = object()
+        self.manager._pad_q_for_model = lambda _model, q, _count: q
+        self.manager._gc_compute_generalized_gravity = (
+            lambda _model, _q, _data: np.arange(6, dtype=np.float64)
+        )
+
+        self.manager._endpos_loop_cb(None, 0.002)
+
+        self.assertEqual(len(self.arm_group.mit_commands), 1)
+        self.assertEqual(self.arm_group.feedback_requests, [False])
+        *_, torque = self.arm_group.mit_commands[0]
+        np.testing.assert_array_equal(
+            torque,
+            np.array([0.0, 1.55, 3.10, 3.0, 4.0, 5.0]),
+        )
+
+    def test_endpose_tick_does_not_hold_command_lock_during_arm_send(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        self.arm_group.send_entered = entered
+        self.arm_group.send_release = release
+
+        thread = threading.Thread(
+            target=lambda: self.manager._endpos_loop_cb(None, 0.002)
+        )
+        thread.start()
+        self.assertTrue(entered.wait(timeout=1.0))
+        acquired = self.manager._cmd_lock.acquire(blocking=False)
+        if acquired:
+            self.manager._cmd_lock.release()
+        release.set()
+        thread.join(timeout=1.0)
+
+        self.assertTrue(acquired)
+        self.assertFalse(thread.is_alive())
+
+    def test_endpose_tick_does_not_hold_command_lock_during_gripper_send(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        self.group.send_entered = entered
+        self.group.send_release = release
+
+        thread = threading.Thread(
+            target=lambda: self.manager._endpos_loop_cb(None, 0.002)
+        )
+        thread.start()
+        self.assertTrue(entered.wait(timeout=1.0))
+        acquired = self.manager._cmd_lock.acquire(blocking=False)
+        if acquired:
+            self.manager._cmd_lock.release()
+        release.set()
+        thread.join(timeout=1.0)
+
+        self.assertTrue(acquired)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

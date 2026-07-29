@@ -14,7 +14,7 @@ models:
       urdf_path: urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf
       end_effector_frame: end_link
       channel: /dev/ttyACM0
-      rate: 500
+      rate: 50
       groups:
         arm:
           joints: [joint1, joint2, joint3, joint4, joint5, joint6]

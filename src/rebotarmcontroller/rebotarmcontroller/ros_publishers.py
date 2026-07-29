@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rebotarm_msgs.msg import ArmStatus, JointMotorState
 from sensor_msgs.msg import JointState
@@ -37,6 +38,7 @@ class JointStatePublisher:
         self._publish_state_lock = threading.Lock()
         self._active_publishes = 0
         self._publish_sequence = 0
+        self._callback_group = MutuallyExclusiveCallbackGroup()
         self._publisher = node.create_publisher(
             JointState,
             f"/{namespace}/joint_states",
@@ -75,7 +77,7 @@ class JointStatePublisher:
         self._timer = node.create_timer(
             period,
             self.publish,
-            callback_group=node.reentrant_group,
+            callback_group=self._callback_group,
         )
         self.publish_status()
 

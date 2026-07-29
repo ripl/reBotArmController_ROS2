@@ -2,6 +2,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from builtin_interfaces.msg import Time
@@ -27,6 +28,45 @@ class _Publisher:
 
 
 class JointStateDiagnosticsTest(unittest.TestCase):
+    def test_timer_uses_its_own_mutually_exclusive_callback_group(self) -> None:
+        timer_groups = []
+        reentrant_group = object()
+        joint_state_group = object()
+
+        def create_timer(_period, _callback, *, callback_group):
+            timer_groups.append(callback_group)
+            return object()
+
+        node = SimpleNamespace(
+            sensor_qos=object(),
+            reentrant_group=reentrant_group,
+            create_publisher=lambda *_args, **_kwargs: _Publisher(),
+            create_timer=create_timer,
+            get_clock=lambda: SimpleNamespace(
+                now=lambda: SimpleNamespace(to_msg=lambda: Time())
+            ),
+        )
+        hardware = SimpleNamespace(
+            joint_names=["joint1"],
+            has_gripper=False,
+            mode="posvel",
+            enabled=True,
+            control_loop_active=True,
+            state_machine="IDLE",
+            get_joint_status_codes=lambda: [0],
+            error_codes=[],
+        )
+
+        with patch(
+            "rebotarmcontroller.ros_publishers.MutuallyExclusiveCallbackGroup",
+            return_value=joint_state_group,
+        ):
+            publisher = JointStatePublisher(node, hardware, "rebotarm", 100.0)
+
+        self.assertIs(publisher._callback_group, joint_state_group)
+        self.assertEqual(timer_groups, [joint_state_group])
+        self.assertIsNot(timer_groups[0], reentrant_group)
+
     def test_records_overlapping_publish_callbacks(self) -> None:
         barrier = threading.Barrier(2)
 

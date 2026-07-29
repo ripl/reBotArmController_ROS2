@@ -40,7 +40,7 @@ class HardwareEefLockingTest(unittest.TestCase):
             raise errors[0]
         return acquired
 
-    def test_solve_eef_ik_releases_command_lock_before_solving(self) -> None:
+    def test_solve_eef_ik_does_not_wait_for_command_lock(self) -> None:
         entered = threading.Event()
         release = threading.Event()
 
@@ -60,13 +60,26 @@ class HardwareEefLockingTest(unittest.TestCase):
         pose = Pose()
         pose.orientation.w = 1.0
 
-        acquired = self._command_lock_is_available_during(
-            lambda: self.manager.solve_eef_ik(pose, np.zeros(6)),
-            entered,
-            release,
-        )
+        errors = []
 
-        self.assertTrue(acquired)
+        def run() -> None:
+            try:
+                self.manager.solve_eef_ik(pose, np.zeros(6))
+            except Exception as exc:
+                errors.append(exc)
+
+        self.manager._cmd_lock.acquire()
+        thread = threading.Thread(target=run)
+        thread.start()
+        entered_without_command_lock = entered.wait(timeout=1.0)
+        self.manager._cmd_lock.release()
+        release.set()
+        thread.join(timeout=1.0)
+
+        self.assertTrue(entered_without_command_lock)
+        self.assertFalse(thread.is_alive())
+        if errors:
+            raise errors[0]
 
     def test_pose_from_joint_positions_does_not_hold_command_lock(self) -> None:
         entered = threading.Event()

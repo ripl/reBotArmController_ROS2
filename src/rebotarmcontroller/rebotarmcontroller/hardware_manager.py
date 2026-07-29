@@ -482,11 +482,8 @@ class HardwareManager:
         return self.get_joint_positions(request=True).copy()
 
     def solve_eef_ik(self, pose, q_seed) -> np.ndarray | None:
-        state_lock_request_ns = time.monotonic_ns()
-        with self._cmd_lock:
-            state_lock_acquired_ns = time.monotonic_ns()
-            if self._state_machine != "EEF_STREAMING":
-                raise RuntimeError("EEF streaming is not active")
+        if self._state_machine != "EEF_STREAMING":
+            raise RuntimeError("EEF streaming is not active")
         solve_start_ns = time.monotonic_ns()
         x, y, z, roll, pitch, yaw = pose_to_xyz_rpy(pose)
         q_padded = self._pad_q_for_model(
@@ -513,7 +510,7 @@ class HardwareManager:
         self._record_diagnostic(
             "ik_solve",
             monotonic_ns=solve_start_ns,
-            state_lock_wait_ns=state_lock_acquired_ns - state_lock_request_ns,
+            state_lock_wait_ns=0,
             duration_ns=solve_end_ns - solve_start_ns,
             success=bool(result.success),
             error=float(getattr(result, "error", float("nan"))),
@@ -824,11 +821,27 @@ class HardwareManager:
         return abs(pos - self._gripper_target_position) < _GRIPPER_GOAL_TOLERANCE_RAD
 
     def _send_gripper_control_locked(self) -> None:
-        if self._gripper_control is None:
+        pending_command = self._next_gripper_control_command_locked()
+        if pending_command is None:
             return
+        command, result_changed = pending_command
+        self._send_gripper_control_command(command)
+        if result_changed:
+            self._gripper_grasp_event.set()
+
+    def _next_gripper_control_command_locked(self):
+        if self._gripper_control is None:
+            return None
         position, velocity, _, _ = self._read_gripper_state_cached()
         previous_result = self._gripper_control.result
         command = self._gripper_control.tick(position, velocity, time.monotonic())
+        result_changed = (
+            self._gripper_control.result is not None
+            and self._gripper_control.result != previous_result
+        )
+        return command, result_changed
+
+    def _send_gripper_control_command(self, command) -> None:
         self._gripper_group.send_mit(
             np.array([command.position], dtype=np.float64),
             vel=np.array([command.velocity], dtype=np.float64),
@@ -836,11 +849,6 @@ class HardwareManager:
             kd=np.array([command.kd], dtype=np.float64),
             tau=np.array([command.torque], dtype=np.float64),
         )
-        if (
-            self._gripper_control.result is not None
-            and self._gripper_control.result != previous_result
-        ):
-            self._gripper_grasp_event.set()
 
     @_locked
     def send_gripper_mit_cmd(
@@ -985,7 +993,7 @@ class HardwareManager:
         return bool(self._endpos_ctrl._moving)
 
     def _endpos_loop_cb(self, robot, dt: float) -> None:
-        del dt
+        del robot, dt
         tick_ns = time.monotonic_ns()
         previous_tick_ns = getattr(self, "_last_endpos_tick_ns", None)
         self._last_endpos_tick_ns = tick_ns
@@ -1002,16 +1010,17 @@ class HardwareManager:
             return
         output_enabled = False
         q_target = None
+        qd_target = None
         velocity_limits = None
         command_sequence = None
+        gripper_command = None
+        gripper_result_changed = False
         diagnostics = getattr(self, "_diagnostics", None)
         diagnostics_active = diagnostics is not None and diagnostics.active
-        send_start_ns = time.monotonic_ns()
+        snapshot_start_ns = time.monotonic_ns()
         try:
             output_enabled = bool(self._control_output_enabled)
-            if not output_enabled:
-                return
-            if diagnostics_active:
+            if output_enabled:
                 command_sequence = self._eef_command_sequence
                 q_target = np.array(
                     self._endpos_ctrl._q_target,
@@ -1026,23 +1035,74 @@ class HardwareManager:
                     ),
                     dtype=np.float64,
                 ).copy()
-            self._endpos_ctrl._loop_cb(robot, 0.0)
-            if self.has_gripper:
-                self._send_gripper_control_locked()
+                qd_target = np.array(
+                    self._endpos_ctrl._qd_target,
+                    dtype=np.float64,
+                    copy=True,
+                )
+                if self.has_gripper:
+                    pending_gripper = self._next_gripper_control_command_locked()
+                    if pending_gripper is not None:
+                        gripper_command, gripper_result_changed = pending_gripper
+        finally:
+            snapshot_end_ns = time.monotonic_ns()
+            self._cmd_lock.release()
+
+        send_start_ns = time.monotonic_ns()
+        try:
+            if output_enabled:
+                self._send_endpos_arm_command(q_target, qd_target, velocity_limits)
+                if gripper_command is not None:
+                    self._send_gripper_control_command(gripper_command)
+                    if gripper_result_changed:
+                        self._gripper_grasp_event.set()
         finally:
             send_end_ns = time.monotonic_ns()
-            self._cmd_lock.release()
-            self._record_diagnostic(
-                "hardware_output",
-                monotonic_ns=tick_ns,
-                tick_interval_ns=tick_interval_ns,
-                lock_acquired=True,
-                output_enabled=output_enabled,
-                command_sequence=command_sequence,
-                send_duration_ns=send_end_ns - send_start_ns,
-                q_target=q_target,
-                velocity_limits=velocity_limits,
+            if diagnostics_active:
+                self._record_diagnostic(
+                    "hardware_output",
+                    monotonic_ns=tick_ns,
+                    tick_interval_ns=tick_interval_ns,
+                    lock_acquired=True,
+                    output_enabled=output_enabled,
+                    command_sequence=command_sequence,
+                    send_duration_ns=send_end_ns - send_start_ns,
+                    snapshot_duration_ns=snapshot_end_ns - snapshot_start_ns,
+                    q_target=q_target,
+                    velocity_limits=velocity_limits,
+                )
+
+    def _send_endpos_arm_command(
+        self,
+        q_target: np.ndarray,
+        qd_target: np.ndarray,
+        velocity_limits: np.ndarray,
+    ) -> None:
+        if self._arm_control_mode == "mit":
+            tau_ff = np.zeros(len(self.joint_names))
+            if self._endpos_ctrl._use_gravity_ff:
+                q_now = self._arm_group.get_positions(request_feedback=False)
+                q_model = self._pad_q_for_model(
+                    self._gc_model,
+                    q_now,
+                    len(self.joint_names),
+                )
+                tau_ff = self._gc_compute_generalized_gravity(
+                    self._gc_model,
+                    q_model,
+                    self._gc_data,
+                )[: len(self.joint_names)]
+                tau_ff[1] *= 1.55
+                tau_ff[2] *= 1.55
+            self._arm_group.send_mit(
+                q_target,
+                vel=qd_target,
+                kp=getattr(self._arm_group, "_mit_kp"),
+                kd=getattr(self._arm_group, "_mit_kd"),
+                tau=tau_ff,
             )
+        else:
+            self._arm_group.send_pos_vel(q_target, vlim=velocity_limits)
 
     def _record_diagnostic(
         self,
