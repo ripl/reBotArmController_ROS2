@@ -18,6 +18,30 @@ class _Diagnostics:
 
 
 class EefControllerDiagnosticsTest(unittest.TestCase):
+    def test_control_loop_records_tick_and_resync(self) -> None:
+        diagnostics = _Diagnostics()
+        controller = EefStreamingController.__new__(EefStreamingController)
+        controller._diagnostics = diagnostics
+        controller._active = True
+        controller._rate_hz = 1000.0
+        controller._control_stop = threading.Event()
+        calls = 0
+
+        def control_tick() -> None:
+            nonlocal calls
+            calls += 1
+            time.sleep(0.003)
+            controller._control_stop.set()
+
+        controller._control_tick = control_tick
+
+        controller._control_loop()
+
+        self.assertEqual(calls, 1)
+        events = [event["event"] for event in diagnostics.events]
+        self.assertIn("control_loop_tick", events)
+        self.assertIn("control_loop_resync", events)
+
     def test_commanded_tick_records_target_and_joint_command(self) -> None:
         diagnostics = _Diagnostics()
         target = np.array([0.3, 0.01, 0.3, 0.0, 0.0, 0.0, 1.0])

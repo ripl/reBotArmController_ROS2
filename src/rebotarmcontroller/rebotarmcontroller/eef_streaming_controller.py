@@ -38,6 +38,8 @@ class EefStreamingController:
         self._pose_command: np.ndarray | None = None
         self._last_target_callback_ns: int | None = None
         self._last_control_tick_ns: int | None = None
+        self._control_stop = threading.Event()
+        self._control_thread: threading.Thread | None = None
 
         self._rate_hz = self._positive_scalar("eef_streaming.control_rate_hz")
         self._timeout = self._positive_scalar("eef_streaming.target_timeout")
@@ -74,11 +76,6 @@ class EefStreamingController:
             SetBool,
             f"/{namespace}/eef_streaming/enable",
             self._enable_callback,
-            callback_group=self._control_group,
-        )
-        self._timer = node.create_timer(
-            1.0 / self._rate_hz,
-            self._control_tick,
             callback_group=self._control_group,
         )
 
@@ -167,6 +164,7 @@ class EefStreamingController:
             self._last_target_callback_ns = None
             self._last_control_tick_ns = None
             self._active = True
+            self._start_control_thread()
             response.success = True
             response.message = "EEF streaming enabled"
         else:
@@ -175,6 +173,86 @@ class EefStreamingController:
             response.message = "EEF streaming disabled"
         self._node.publish_arm_status()
         return response
+
+    def shutdown(self) -> None:
+        if self._active:
+            self._stop_streaming("shutdown")
+        else:
+            self._stop_control_thread()
+
+    def _start_control_thread(self) -> None:
+        if self._control_thread is not None and self._control_thread.is_alive():
+            return
+        self._control_stop.clear()
+        self._control_thread = threading.Thread(
+            target=self._control_loop,
+            name="eef_streaming_control",
+            daemon=True,
+        )
+        self._control_thread.start()
+
+    def _stop_control_thread(self) -> None:
+        self._control_stop.set()
+        thread = self._control_thread
+        if thread is None or thread is threading.current_thread():
+            return
+        thread.join(timeout=1.0)
+        if thread.is_alive():
+            self._node.get_logger().warn("EEF streaming control thread did not stop")
+            return
+        self._control_thread = None
+
+    def _control_loop(self) -> None:
+        period_ns = int(1_000_000_000 / self._rate_hz)
+        next_tick_ns = time.monotonic_ns()
+        self._record_diagnostic(
+            "control_loop",
+            monotonic_ns=next_tick_ns,
+            outcome="started",
+            rate_hz=self._rate_hz,
+            period_ns=period_ns,
+        )
+        stop_reason = "stop_requested"
+        try:
+            while not self._control_stop.is_set():
+                if not self._active:
+                    stop_reason = "inactive"
+                    return
+
+                now_ns = time.monotonic_ns()
+                wait_ns = next_tick_ns - now_ns
+                if wait_ns > 0:
+                    if self._control_stop.wait(wait_ns * 1e-9):
+                        return
+
+                wake_ns = time.monotonic_ns()
+                lateness_ns = max(0, wake_ns - next_tick_ns)
+                self._record_diagnostic(
+                    "control_loop_tick",
+                    monotonic_ns=wake_ns,
+                    scheduled_monotonic_ns=next_tick_ns,
+                    wake_lateness_ns=lateness_ns,
+                    period_ns=period_ns,
+                    outcome="late" if lateness_ns > period_ns else "scheduled",
+                )
+                self._control_tick()
+
+                tick_end_ns = time.monotonic_ns()
+                next_tick_ns += period_ns
+                if next_tick_ns < tick_end_ns:
+                    self._record_diagnostic(
+                        "control_loop_resync",
+                        monotonic_ns=tick_end_ns,
+                        behind_ns=tick_end_ns - next_tick_ns,
+                        period_ns=period_ns,
+                    )
+                    next_tick_ns = tick_end_ns + period_ns
+        finally:
+            self._record_diagnostic(
+                "control_loop",
+                outcome=stop_reason,
+                period_ns=period_ns,
+            )
 
     def _control_tick(self) -> None:
         if not self._active:
@@ -376,6 +454,7 @@ class EefStreamingController:
         return scale_start * start + scale_end * end
 
     def _stop_streaming(self, reason: str) -> None:
+        self._stop_control_thread()
         if not self._active:
             self._stop_diagnostics(reason)
             return

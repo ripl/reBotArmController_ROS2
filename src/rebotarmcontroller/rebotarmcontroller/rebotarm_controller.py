@@ -104,6 +104,7 @@ class reBotArmController(Node):
         self.joint_state_publisher.publish_status(read_hardware=read_hardware)
 
     def shutdown(self) -> None:
+        self.eef_streaming.shutdown()
         self.hardware.shutdown(
             disable_after_safe_home=self.disable_after_safe_home,
         )
