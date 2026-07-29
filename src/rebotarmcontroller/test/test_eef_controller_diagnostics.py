@@ -69,6 +69,7 @@ class EefControllerDiagnosticsTest(unittest.TestCase):
         controller._pose_command = np.array(
             [0.3, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
         )
+        controller._diagnostics_detail = True
         controller._timeout = 1.0
         controller._workspace_min = np.full(3, -1.0)
         controller._workspace_max = np.full(3, 1.0)

@@ -42,6 +42,8 @@ class EefStreamingController:
         self._control_thread: threading.Thread | None = None
 
         self._rate_hz = self._positive_scalar("eef_streaming.control_rate_hz")
+        self._publish_target_tf = self._bool_param("eef_streaming.publish_target_tf")
+        self._diagnostics_detail = self._bool_param("eef_streaming.diagnostics_detail")
         self._timeout = self._positive_scalar("eef_streaming.target_timeout")
         self._max_linear_velocity = self._positive_scalar(
             "eef_streaming.max_linear_velocity"
@@ -85,6 +87,9 @@ class EefStreamingController:
             raise ValueError(f"{name} must be positive")
         return value
 
+    def _bool_param(self, name: str) -> bool:
+        return bool(self._node.get_parameter(name).value)
+
     def _positive_or_zero_scalar(self, name: str) -> float:
         value = float(self._node.get_parameter(name).value)
         if value < 0.0:
@@ -114,16 +119,22 @@ class EefStreamingController:
         with self._lock:
             self._latest_target = target
             self._latest_target_time = callback_ns * 1e-9
-        self._record_diagnostic(
-            "target_received",
-            monotonic_ns=callback_ns,
-            callback_interval_ns=(
+        values = {
+            "callback_interval_ns": (
                 None
                 if previous_callback_ns is None
                 else callback_ns - previous_callback_ns
-            ),
-            target=target.tolist(),
+            )
+        }
+        if self._diagnostics_detail:
+            values["target"] = target.tolist()
+        self._record_diagnostic(
+            "target_received",
+            monotonic_ns=callback_ns,
+            **values,
         )
+        if not self._publish_target_tf:
+            return
         transform = TransformStamped()
         transform.header.stamp = self._node.get_clock().now().to_msg()
         transform.header.frame_id = self._frame_id
@@ -160,6 +171,8 @@ class EefStreamingController:
                     joint_velocity_limits=self._joint_velocity_limits.tolist(),
                     q_initial=q_current.tolist(),
                     pose_initial=self._pose_command.tolist(),
+                    publish_target_tf=self._publish_target_tf,
+                    diagnostics_detail=self._diagnostics_detail,
                 )
             self._last_target_callback_ns = None
             self._last_control_tick_ns = None
@@ -304,10 +317,12 @@ class EefStreamingController:
             return
 
         assert self._q_command is not None and self._pose_command is not None
-        q_command = self._q_command.copy()
-        pose_command = self._pose_command.copy()
+        q_command = self._q_command.copy() if self._diagnostics_detail else None
+        pose_command = self._pose_command.copy() if self._diagnostics_detail else None
         limited_pose = self._limit_pose(target)
-        limited_pose_array = self._pose_to_array(limited_pose)
+        limited_pose_array = (
+            self._pose_to_array(limited_pose) if self._diagnostics_detail else None
+        )
         solve_start_ns = time.monotonic_ns()
         try:
             q_ik = self._hardware.solve_eef_ik(limited_pose, self._q_command)
@@ -367,25 +382,32 @@ class EefStreamingController:
         fk_end_ns = time.monotonic_ns()
         self._q_command = q_next
         self._pose_command = self._pose_to_array(pose_next)
+        values = {
+            "tick_interval_ns": tick_interval_ns,
+            "target_age_ns": target_age_ns,
+            "command_sequence": command_sequence,
+            "solve_duration_ns": solve_end_ns - solve_start_ns,
+            "set_target_duration_ns": set_target_end_ns - set_target_start_ns,
+            "fk_duration_ns": fk_end_ns - fk_start_ns,
+            "outcome": "commanded",
+            "total_duration_ns": fk_end_ns - tick_start_ns,
+        }
+        if self._diagnostics_detail:
+            assert q_command is not None and pose_command is not None
+            values.update(
+                target=target.tolist(),
+                pose_command=pose_command.tolist(),
+                limited_pose=(
+                    None if limited_pose_array is None else limited_pose_array.tolist()
+                ),
+                q_command=q_command.tolist(),
+                q_ik=q_ik.tolist(),
+                q_next=q_next.tolist(),
+            )
         self._record_diagnostic(
             "control_tick",
             monotonic_ns=tick_start_ns,
-            tick_interval_ns=tick_interval_ns,
-            target_age_ns=target_age_ns,
-            target=target.tolist(),
-            pose_command=pose_command.tolist(),
-            limited_pose=(
-                None if limited_pose_array is None else limited_pose_array.tolist()
-            ),
-            q_command=q_command.tolist(),
-            q_ik=q_ik.tolist(),
-            q_next=q_next.tolist(),
-            command_sequence=command_sequence,
-            solve_duration_ns=solve_end_ns - solve_start_ns,
-            set_target_duration_ns=set_target_end_ns - set_target_start_ns,
-            fk_duration_ns=fk_end_ns - fk_start_ns,
-            outcome="commanded",
-            total_duration_ns=fk_end_ns - tick_start_ns,
+            **values,
         )
 
     def _limit_pose(self, target: np.ndarray) -> Pose:

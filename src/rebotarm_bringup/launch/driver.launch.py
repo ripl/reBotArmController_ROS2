@@ -16,6 +16,8 @@ def generate_launch_description():
     cmd_arbitration = LaunchConfiguration("cmd_arbitration")
     arm_namespace = LaunchConfiguration("arm_namespace")
     disable_after_safe_home = LaunchConfiguration("disable_after_safe_home")
+    eef_streaming_publish_target_tf = LaunchConfiguration("eef_streaming_publish_target_tf")
+    eef_streaming_diagnostics_detail = LaunchConfiguration("eef_streaming_diagnostics_detail")
 
     return LaunchDescription(
         [
@@ -31,6 +33,8 @@ def generate_launch_description():
             DeclareLaunchArgument("cmd_arbitration", default_value="reject"),
             DeclareLaunchArgument("arm_namespace", default_value="rebotarm"),
             DeclareLaunchArgument("disable_after_safe_home", default_value="true"),
+            DeclareLaunchArgument("eef_streaming_publish_target_tf", default_value="true"),
+            DeclareLaunchArgument("eef_streaming_diagnostics_detail", default_value="true"),
             Node(
                 package="rebotarmcontroller",
                 executable="reBotArmController",
@@ -47,6 +51,14 @@ def generate_launch_description():
                         "arm_namespace": arm_namespace,
                         "disable_after_safe_home": ParameterValue(
                             disable_after_safe_home,
+                            value_type=bool,
+                        ),
+                        "eef_streaming.publish_target_tf": ParameterValue(
+                            eef_streaming_publish_target_tf,
+                            value_type=bool,
+                        ),
+                        "eef_streaming.diagnostics_detail": ParameterValue(
+                            eef_streaming_diagnostics_detail,
                             value_type=bool,
                         ),
                     }

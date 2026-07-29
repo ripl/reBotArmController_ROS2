@@ -44,6 +44,8 @@ class reBotArmController(Node):
         self.declare_parameter("eef_streaming.workspace_min", [0.15, -0.35, 0.05])
         self.declare_parameter("eef_streaming.workspace_max", [0.55, 0.35, 0.55])
         self.declare_parameter("eef_streaming.joint_limit_margin", 0.05)
+        self.declare_parameter("eef_streaming.publish_target_tf", True)
+        self.declare_parameter("eef_streaming.diagnostics_detail", True)
 
         hardware_config = self.get_parameter("hardware_config").value or None
         model = str(self.get_parameter("model").value or "")

@@ -25,6 +25,8 @@ def generate_launch_description():
     frame_id = LaunchConfiguration("frame_id")
     ee_frame_id = LaunchConfiguration("ee_frame_id")
     disable_after_safe_home = LaunchConfiguration("disable_after_safe_home")
+    eef_streaming_publish_target_tf = LaunchConfiguration("eef_streaming_publish_target_tf")
+    eef_streaming_diagnostics_detail = LaunchConfiguration("eef_streaming_diagnostics_detail")
 
     urdf_file = PathJoinSubstitution(
         [
@@ -60,6 +62,8 @@ def generate_launch_description():
             DeclareLaunchArgument("frame_id", default_value="base_link"),
             DeclareLaunchArgument("ee_frame_id", default_value="end_link"),
             DeclareLaunchArgument("disable_after_safe_home", default_value="true"),
+            DeclareLaunchArgument("eef_streaming_publish_target_tf", default_value="true"),
+            DeclareLaunchArgument("eef_streaming_diagnostics_detail", default_value="true"),
             Node(
                 package="rebotarmcontroller",
                 executable="reBotArmController",
@@ -79,6 +83,14 @@ def generate_launch_description():
                         "ee_frame_id": ee_frame_id,
                         "disable_after_safe_home": ParameterValue(
                             disable_after_safe_home,
+                            value_type=bool,
+                        ),
+                        "eef_streaming.publish_target_tf": ParameterValue(
+                            eef_streaming_publish_target_tf,
+                            value_type=bool,
+                        ),
+                        "eef_streaming.diagnostics_detail": ParameterValue(
+                            eef_streaming_diagnostics_detail,
                             value_type=bool,
                         ),
                     }
