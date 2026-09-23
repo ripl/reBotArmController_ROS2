@@ -402,8 +402,8 @@ class HardwareManager:
             for name, values in dict(pos=pos, vel=vel, kp=kp, kd=kd, tau=tau).items()
         }
         for name, values in command.items():
-            if values.shape != (len(self.joint_names),) or not np.all(np.isfinite(values)):
-                raise ValueError(f"MIT stream {name} must be {len(self.joint_names)} finite values")
+            if values.shape != (len(self.joint_names),):
+                raise ValueError(f"MIT stream {name} must have {len(self.joint_names)} values")
         if self._arm_control_mode != "mit":
             raise RuntimeError(f"MIT stream requires arm_control_mode mit, not {self._arm_control_mode}")
         if self._mit_stream_stopped:

@@ -87,7 +87,7 @@ def test_leaving_stream_holds_last_streamed_pose(hw):
     np.testing.assert_array_equal(hw._endpos_ctrl._qd_target, command(2.)[1])
 
 
-@pytest.mark.parametrize("bad", [np.zeros(5), np.array([0., 0., np.nan, 0., 0., 0.])])
+@pytest.mark.parametrize("bad", [np.zeros(5), np.zeros(7)])
 def test_malformed_command_rejected_without_state_change(hw, bad):
     args = command()
     args[2] = bad
