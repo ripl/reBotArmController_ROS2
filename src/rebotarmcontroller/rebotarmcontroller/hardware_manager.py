@@ -13,6 +13,7 @@ _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 _GRIPPER_CLOSED_POSITION = 0.0
 _MIT_STREAM_MAX_STEP_RAD = np.radians(2.0)   # between consecutive stream targets, any arm joint
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
+_MIT_STREAM_TIMEOUT_S = 0.1                  # longest time without a new stream target
 
 
 def _locked(method):
@@ -36,6 +37,7 @@ class HardwareManager:
         self._cmd_lock = threading.RLock()
         self._mit_stream: dict[str, np.ndarray] | None = None
         self._mit_stream_stopped = False
+        self._mit_stream_time = 0.0
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
             model,
@@ -391,8 +393,9 @@ class HardwareManager:
 
         The first command enables the arm if needed and enters MIT_STREAMING; returns True then.
         A target more than 2 deg from the previous one, or more than 15 deg from the measured
-        position, stops the stream: the loop holds the last accepted target and further commands
-        are rejected until MIT_STREAMING is left (enable, disable, safe_home).
+        position, or no new target for 100 ms, stops the stream: the loop holds the last accepted
+        target and further commands are rejected until MIT_STREAMING is left (enable, disable,
+        safe_home).
         """
         command = {
             name: np.asarray(values, dtype=np.float64)
@@ -413,9 +416,7 @@ class HardwareManager:
                       f"target-to-measured gap {np.degrees(gap):.2f} deg (limit 15)")
             if previous is None:
                 raise RuntimeError(reason + "; stream not started")
-            self._mit_stream = dict(previous, vel=np.zeros(len(self.joint_names)))
-            self._mit_stream_stopped = True
-            self._endpos_ctrl._qd_target[:] = 0.0
+            self._stop_mit_stream()
             raise RuntimeError(reason + "; holding the last target, call enable to reset")
         started = self._state_machine != "MIT_STREAMING"
         if started:
@@ -423,10 +424,17 @@ class HardwareManager:
             self.start_endpos_control()
             self.set_state_machine("MIT_STREAMING")
         self._mit_stream = command
+        self._mit_stream_time = time.monotonic()
         # Keep the normal target on the stream, so leaving MIT_STREAMING holds the last pose.
         self._endpos_ctrl._q_target[:] = command["pos"]
         self._endpos_ctrl._qd_target[:] = command["vel"]
         return started
+
+    def _stop_mit_stream(self) -> None:
+        """Hold the last accepted stream target; called under the command lock."""
+        self._mit_stream = dict(self._mit_stream, vel=np.zeros(len(self.joint_names)))
+        self._mit_stream_stopped = True
+        self._endpos_ctrl._qd_target[:] = 0.0
 
     @_locked
     def begin_trajectory_stream(self) -> None:
@@ -779,6 +787,8 @@ class HardwareManager:
             if self._mit_stream is None:
                 self._endpos_ctrl._loop_cb(robot, 0.0)
                 return
+            if not self._mit_stream_stopped and time.monotonic() - self._mit_stream_time > _MIT_STREAM_TIMEOUT_S:
+                self._stop_mit_stream()
             # Commands are replaced, never mutated, so sending them after release is safe.
             stream = self._mit_stream
             gripper_target = self._endpos_ctrl._gripper_target if self._endpos_ctrl._has_gripper else None

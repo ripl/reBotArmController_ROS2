@@ -38,6 +38,7 @@ def hw():
     hw._cmd_lock = threading.RLock()
     hw._mit_stream = None
     hw._mit_stream_stopped = False
+    hw._mit_stream_time = 0.0
     hw._state_machine = "IDLE"
     hw._arm_control_mode = "mit"
     hw._enabled, hw._gravity_comp_active, hw._control_output_enabled = True, False, True
@@ -152,3 +153,19 @@ def test_first_command_skips_step_guard_but_not_gap_guard(hw):
     with pytest.raises(RuntimeError, match="stream not started"):
         hw.stream_mit(*command(pos=np.full(6, 26.)))                # 16 deg from measured
     assert hw.state_machine == "IDLE" and hw.enable_calls == 1
+
+
+def test_watchdog_holds_last_target_after_100_ms_without_a_command(hw):
+    hw.stream_mit(*command(pos=np.full(6, 1.)))
+    hw._endpos_loop_cb(None, .002)                                 # fresh command: still streaming
+    assert not hw._mit_stream_stopped
+    np.testing.assert_array_equal(hw._arm_group.sent[-1]["vel"], np.full(6, .1))
+    hw._mit_stream_time -= .2                                      # 200 ms without a new command
+    hw._endpos_loop_cb(None, .002)
+    held = hw._arm_group.sent[-1]
+    np.testing.assert_allclose(held["pos"], np.radians(np.full(6, 1.)))
+    np.testing.assert_array_equal(held["vel"], np.zeros(6))
+    with pytest.raises(RuntimeError, match="stopped by a guard"):
+        hw.stream_mit(*command(pos=np.full(6, 1.)))
+    hw.set_state_machine("IDLE")
+    assert hw.stream_mit(*command(pos=np.full(6, 1.))) is True
