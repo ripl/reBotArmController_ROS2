@@ -758,15 +758,19 @@ class HardwareManager:
             if self._mit_stream is None:
                 self._endpos_ctrl._loop_cb(robot, 0.0)
                 return
-            self._arm_group.send_mit(**self._mit_stream)
-            if self._endpos_ctrl._has_gripper:  # the same gripper hold the SDK loop sends
-                self._endpos_ctrl._gripper_group.send_mit(
-                    np.array([self._endpos_ctrl._gripper_target]),
-                    kp=self._endpos_ctrl._gripper_group._mit_kp,
-                    kd=self._endpos_ctrl._gripper_group._mit_kd,
-                )
+            # Commands are replaced, never mutated, so sending them after release is safe.
+            stream = self._mit_stream
+            gripper_target = self._endpos_ctrl._gripper_target if self._endpos_ctrl._has_gripper else None
         finally:
             self._cmd_lock.release()
+        # Send without the lock: stream commands must not wait for the ~1 ms CAN send.
+        self._arm_group.send_mit(**stream)
+        if gripper_target is not None:  # the same gripper hold the SDK loop sends
+            self._endpos_ctrl._gripper_group.send_mit(
+                np.array([gripper_target]),
+                kp=self._endpos_ctrl._gripper_group._mit_kp,
+                kd=self._endpos_ctrl._gripper_group._mit_kd,
+            )
 
     def _send_endpos_hold_once(self) -> None:
         if self._arm_control_mode == "mit":

@@ -9,12 +9,23 @@ from rebotarmcontroller.hardware_manager import HardwareManager
 
 
 class Group:
-    def __init__(self, joint_names=()):
-        self.sent, self.joint_names = [], list(joint_names)
+    def __init__(self, joint_names=(), lock=None):
+        self.sent, self.joint_names, self.lock, self.lock_free = [], list(joint_names), lock, []
         self._mit_kp, self._mit_kd = np.array([2.5]), np.array([1.0])
 
     def send_mit(self, pos, vel=None, kp=None, kd=None, tau=None):
         self.sent.append(dict(pos=pos, vel=vel, kp=kp, kd=kd, tau=tau))
+        if self.lock is not None:                    # can another thread take the lock during the send?
+            free = []
+
+            def probe():
+                free.append(self.lock.acquire(blocking=False))
+                if free[0]:
+                    self.lock.release()
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            self.lock_free.append(free[0])
 
 
 @pytest.fixture
@@ -25,7 +36,7 @@ def hw():
     hw._state_machine = "IDLE"
     hw._arm_control_mode = "mit"
     hw._enabled, hw._gravity_comp_active, hw._control_output_enabled = True, False, True
-    hw._arm_group = Group(f"joint{i}" for i in range(1, 7))
+    hw._arm_group = Group((f"joint{i}" for i in range(1, 7)), lock=hw._cmd_lock)
     hw._robot = SimpleNamespace(stop_control_loop=lambda: None, control_loop_active=True, has_gripper=True)
     hw.sdk_loop_calls = 0
 
@@ -55,6 +66,7 @@ def test_stream_enters_state_once_and_loop_sends_latest_command(hw):
     for name, expected in zip(("pos", "vel", "kp", "kd", "tau"), command(2.)):
         np.testing.assert_array_equal(sent[name], expected)
     assert hw.sdk_loop_calls == 0
+    assert hw._arm_group.lock_free == [True]            # the CAN send does not hold the command lock
     gripper = hw._endpos_ctrl._gripper_group.sent[-1]
     np.testing.assert_array_equal(gripper["pos"], [.3])
 
