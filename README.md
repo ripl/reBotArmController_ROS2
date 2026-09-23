@@ -55,6 +55,7 @@ The workspace contains five ROS2 packages:
 - Supports the standard `control_msgs/action/FollowJointTrajectory` interface
 - Supports gripper control: `SetGripper` service, `GripperCommand` action
 - Supports single-joint commands: `JointMitCmd`, `JointPosVelCmd`
+- Supports streaming MIT commands for all arm joints: `/rebotarm/arm/stream/mit` (`ArmMitCmd`); the control loop (500 Hz in the DM SDK config) resends the latest command every cycle until another arrives, and trajectory, IK and low-level commands are rejected while streaming
 
 ---
 

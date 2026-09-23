@@ -45,7 +45,7 @@ class ArmActions:
 
     def arm_goal_callback(self, _goal_request):
         return self._gate_goal(
-            ("TRAJ_RUNNING", "GRAVITY_COMP", "SAFE_HOMING"), "arm motion"
+            ("TRAJ_RUNNING", "MIT_STREAMING", "GRAVITY_COMP", "SAFE_HOMING"), "arm motion"
         )
 
     def gripper_goal_callback(self, _goal_request):

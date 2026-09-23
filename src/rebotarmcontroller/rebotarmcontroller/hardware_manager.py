@@ -32,6 +32,7 @@ class HardwareManager:
         channel: str = "",
     ) -> None:
         self._cmd_lock = threading.RLock()
+        self._mit_stream: dict[str, np.ndarray] | None = None
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
             model,
@@ -140,10 +141,13 @@ class HardwareManager:
             "IDLE",
             "TRAJ_RUNNING",
             "LOWLEVEL_STREAMING",
+            "MIT_STREAMING",
             "GRAVITY_COMP",
             "SAFE_HOMING",
         ):
             raise ValueError(f"unsupported state machine value: {state}")
+        if state != "MIT_STREAMING":
+            self._mit_stream = None
         self._state_machine = state
 
     # ------------------------------------------------------------------
@@ -374,8 +378,34 @@ class HardwareManager:
 
     def _require_idle(self, what: str) -> None:
         state = self._state_machine
-        if state in ("TRAJ_RUNNING", "GRAVITY_COMP", "SAFE_HOMING"):
+        if state in ("TRAJ_RUNNING", "MIT_STREAMING", "GRAVITY_COMP", "SAFE_HOMING"):
             raise RuntimeError(f"rejecting {what} in state {state}")
+
+    @_locked
+    def stream_mit(self, pos, vel, kp, kd, tau) -> bool:
+        """Store the arm MIT command that the control loop resends every cycle.
+
+        The first command enables the arm if needed and enters MIT_STREAMING; returns True then.
+        """
+        command = {
+            name: np.asarray(values, dtype=np.float64)
+            for name, values in dict(pos=pos, vel=vel, kp=kp, kd=kd, tau=tau).items()
+        }
+        for name, values in command.items():
+            if values.shape != (len(self.joint_names),) or not np.all(np.isfinite(values)):
+                raise ValueError(f"MIT stream {name} must be {len(self.joint_names)} finite values")
+        if self._arm_control_mode != "mit":
+            raise RuntimeError(f"MIT stream requires arm_control_mode mit, not {self._arm_control_mode}")
+        started = self._state_machine != "MIT_STREAMING"
+        if started:
+            self._require_idle("MIT stream")
+            self.start_endpos_control()
+            self.set_state_machine("MIT_STREAMING")
+        self._mit_stream = command
+        # Keep the normal target on the stream, so leaving MIT_STREAMING holds the last pose.
+        self._endpos_ctrl._q_target[:] = command["pos"]
+        self._endpos_ctrl._qd_target[:] = command["vel"]
+        return started
 
     @_locked
     def begin_trajectory_stream(self) -> None:
@@ -420,7 +450,7 @@ class HardwareManager:
 
     @_locked
     def start_gravity_compensation(self) -> None:
-        if self._state_machine in ("TRAJ_RUNNING", "SAFE_HOMING"):
+        if self._state_machine in ("TRAJ_RUNNING", "MIT_STREAMING", "SAFE_HOMING"):
             raise RuntimeError(
                 f"rejecting gravity compensation in state {self._state_machine}"
             )
@@ -627,6 +657,8 @@ class HardwareManager:
             raise RuntimeError("rejecting gripper command while trajectory is running")
         if not self.has_gripper or not self._gripper_name:
             raise RuntimeError("gripper is not initialized")
+        if not allow_endpos and self.state_machine == "MIT_STREAMING":
+            raise RuntimeError("rejecting gripper command that stops the MIT stream control loop")
         if not allow_endpos and self.control_loop_active:
             self.stop_motion()
             self._robot.stop_control_loop()
@@ -643,6 +675,8 @@ class HardwareManager:
             raise RuntimeError("rejecting low-level command during gravity compensation")
         if self.state_machine == "SAFE_HOMING":
             raise RuntimeError("rejecting low-level command during safe home")
+        if self.state_machine == "MIT_STREAMING":
+            raise RuntimeError("rejecting low-level command during MIT streaming")
         if self.state_machine == "TRAJ_RUNNING":
             self.stop_motion()
         self._robot.stop_control_loop()
@@ -721,7 +755,16 @@ class HardwareManager:
         try:
             if not self._control_output_enabled:
                 return
-            self._endpos_ctrl._loop_cb(robot, 0.0)
+            if self._mit_stream is None:
+                self._endpos_ctrl._loop_cb(robot, 0.0)
+                return
+            self._arm_group.send_mit(**self._mit_stream)
+            if self._endpos_ctrl._has_gripper:  # the same gripper hold the SDK loop sends
+                self._endpos_ctrl._gripper_group.send_mit(
+                    np.array([self._endpos_ctrl._gripper_target]),
+                    kp=self._endpos_ctrl._gripper_group._mit_kp,
+                    kd=self._endpos_ctrl._gripper_group._mit_kd,
+                )
         finally:
             self._cmd_lock.release()
 
