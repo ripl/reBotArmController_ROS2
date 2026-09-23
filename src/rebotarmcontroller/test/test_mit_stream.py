@@ -38,6 +38,7 @@ def hw():
     hw._cmd_lock = threading.RLock()
     hw._mit_stream = None
     hw._mit_stream_stopped = False
+    hw._mit_stream_stop_reason = ""
     hw._mit_stream_time = 0.0
     hw._state_machine = "IDLE"
     hw._arm_control_mode = "mit"
@@ -50,12 +51,6 @@ def hw():
         hw.sdk_loop_calls += 1
     hw._endpos_ctrl = SimpleNamespace(_q_target=np.zeros(6), _qd_target=np.zeros(6), _loop_cb=sdk_loop,
                                       _has_gripper=True, _gripper_group=Group(), _gripper_target=0.3, _running=True)
-    hw.enable_calls = 0
-
-    def start_endpos_control():
-        hw.enable_calls += 1
-        hw.set_state_machine("IDLE")
-    hw.start_endpos_control = start_endpos_control
     return hw
 
 
@@ -67,7 +62,7 @@ def command(scale=1., pos=None):
 def test_stream_enters_state_once_and_loop_sends_latest_command(hw):
     assert hw.stream_mit(*command()) is True
     assert hw.stream_mit(*command(2.)) is False
-    assert hw.enable_calls == 1 and hw.state_machine == "MIT_STREAMING"
+    assert hw.state_machine == "MIT_STREAMING"
     hw._endpos_loop_cb(None, .002)
     sent = hw._arm_group.sent[-1]
     for name, expected in zip(("pos", "vel", "kp", "kd", "tau"), command(2.)):
@@ -93,7 +88,7 @@ def test_malformed_command_rejected_without_state_change(hw, bad):
     args[2] = bad
     with pytest.raises(ValueError):
         hw.stream_mit(*args)
-    assert hw.state_machine == "IDLE" and hw.enable_calls == 0
+    assert hw.state_machine == "IDLE"
 
 
 def test_rejected_outside_mit_mode_and_while_busy(hw):
@@ -104,7 +99,6 @@ def test_rejected_outside_mit_mode_and_while_busy(hw):
     hw._state_machine = "TRAJ_RUNNING"
     with pytest.raises(RuntimeError):
         hw.stream_mit(*command())
-    assert hw.enable_calls == 0
 
 
 def test_streaming_blocks_commands_that_would_stop_or_override_it(hw):
@@ -125,7 +119,7 @@ def test_step_guard_holds_last_target_until_reset(hw):
     hw.stream_mit(*command(pos=np.full(6, 2.9)))                   # 1.9 deg step: accepted
     with pytest.raises(RuntimeError, match="target step"):
         hw.stream_mit(*command(pos=[2.9, 2.9, 5.0, 2.9, 2.9, 2.9]))  # 2.1 deg on one joint
-    with pytest.raises(RuntimeError, match="stopped by a guard"):
+    with pytest.raises(RuntimeError, match="stopped: MIT stream guard: target step"):
         hw.stream_mit(*command(pos=np.full(6, 2.9)))               # latched: even a small step is refused
     hw._endpos_loop_cb(None, .002)
     held = hw._arm_group.sent[-1]
@@ -152,7 +146,7 @@ def test_first_command_skips_step_guard_but_not_gap_guard(hw):
     hw.set_state_machine("IDLE")
     with pytest.raises(RuntimeError, match="stream not started"):
         hw.stream_mit(*command(pos=np.full(6, 26.)))                # 16 deg from measured
-    assert hw.state_machine == "IDLE" and hw.enable_calls == 1
+    assert hw.state_machine == "IDLE"
 
 
 def test_watchdog_holds_last_target_after_100_ms_without_a_command(hw):
@@ -165,7 +159,17 @@ def test_watchdog_holds_last_target_after_100_ms_without_a_command(hw):
     held = hw._arm_group.sent[-1]
     np.testing.assert_allclose(held["pos"], np.radians(np.full(6, 1.)))
     np.testing.assert_array_equal(held["vel"], np.zeros(6))
-    with pytest.raises(RuntimeError, match="stopped by a guard"):
+    with pytest.raises(RuntimeError, match="stopped: MIT stream guard: no new target"):
         hw.stream_mit(*command(pos=np.full(6, 1.)))
     hw.set_state_machine("IDLE")
     assert hw.stream_mit(*command(pos=np.full(6, 1.))) is True
+
+
+def test_stream_refused_while_torque_is_off(hw):
+    hw._enabled = False
+    with pytest.raises(RuntimeError, match="enabled first"):
+        hw.stream_mit(*command())
+    hw._enabled, hw._robot.control_loop_active = True, False
+    with pytest.raises(RuntimeError, match="enabled first"):
+        hw.stream_mit(*command())
+    assert hw.state_machine == "IDLE" and hw._mit_stream is None

@@ -37,6 +37,7 @@ class HardwareManager:
         self._cmd_lock = threading.RLock()
         self._mit_stream: dict[str, np.ndarray] | None = None
         self._mit_stream_stopped = False
+        self._mit_stream_stop_reason = ""
         self._mit_stream_time = 0.0
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
@@ -154,6 +155,7 @@ class HardwareManager:
         if state != "MIT_STREAMING":
             self._mit_stream = None
             self._mit_stream_stopped = False
+            self._mit_stream_stop_reason = ""
         self._state_machine = state
 
     # ------------------------------------------------------------------
@@ -391,7 +393,7 @@ class HardwareManager:
     def stream_mit(self, pos, vel, kp, kd, tau) -> bool:
         """Store the arm MIT command that the control loop resends every cycle.
 
-        The first command enables the arm if needed and enters MIT_STREAMING; returns True then.
+        The arm must already be enabled; the first command enters MIT_STREAMING and returns True.
         A target more than 2 deg from the previous one, or more than 15 deg from the measured
         position, or no new target for 100 ms, stops the stream: the loop holds the last accepted
         target and further commands are rejected until MIT_STREAMING is left (enable, disable,
@@ -406,8 +408,10 @@ class HardwareManager:
                 raise ValueError(f"MIT stream {name} must have {len(self.joint_names)} values")
         if self._arm_control_mode != "mit":
             raise RuntimeError(f"MIT stream requires arm_control_mode mit, not {self._arm_control_mode}")
+        if not (self._enabled and self.control_loop_active):
+            raise RuntimeError("MIT stream requires the arm to be enabled first (call enable)")
         if self._mit_stream_stopped:
-            raise RuntimeError("MIT stream stopped by a guard; call enable to reset")
+            raise RuntimeError(f"MIT stream stopped: {self._mit_stream_stop_reason}; call enable to reset")
         previous = self._mit_stream
         step = np.abs(command["pos"] - previous["pos"]).max() if previous is not None else 0.0
         gap = np.abs(command["pos"] - self.get_joint_positions()).max()
@@ -416,12 +420,11 @@ class HardwareManager:
                       f"target-to-measured gap {np.degrees(gap):.2f} deg (limit 15)")
             if previous is None:
                 raise RuntimeError(reason + "; stream not started")
-            self._stop_mit_stream()
+            self._stop_mit_stream(reason)
             raise RuntimeError(reason + "; holding the last target, call enable to reset")
         started = self._state_machine != "MIT_STREAMING"
         if started:
             self._require_idle("MIT stream")
-            self.start_endpos_control()
             self.set_state_machine("MIT_STREAMING")
         self._mit_stream = command
         self._mit_stream_time = time.monotonic()
@@ -430,8 +433,9 @@ class HardwareManager:
         self._endpos_ctrl._qd_target[:] = command["vel"]
         return started
 
-    def _stop_mit_stream(self) -> None:
+    def _stop_mit_stream(self, reason: str) -> None:
         """Hold the last accepted stream target; called under the command lock."""
+        self._mit_stream_stop_reason = reason
         self._mit_stream = dict(self._mit_stream, vel=np.zeros(len(self.joint_names)))
         self._mit_stream_stopped = True
         self._endpos_ctrl._qd_target[:] = 0.0
@@ -788,7 +792,8 @@ class HardwareManager:
                 self._endpos_ctrl._loop_cb(robot, 0.0)
                 return
             if not self._mit_stream_stopped and time.monotonic() - self._mit_stream_time > _MIT_STREAM_TIMEOUT_S:
-                self._stop_mit_stream()
+                self._stop_mit_stream(f"MIT stream guard: no new target for "
+                                      f"{time.monotonic() - self._mit_stream_time:.3f} s (limit 0.1)")
             # Commands are replaced, never mutated, so sending them after release is safe.
             stream = self._mit_stream
             gripper_target = self._endpos_ctrl._gripper_target if self._endpos_ctrl._has_gripper else None
