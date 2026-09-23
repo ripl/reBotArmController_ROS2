@@ -231,7 +231,6 @@ class FakeRsDriver(Node):
 
     def _safe_home(self, _request, response):
         self.targets = [0.0] * 6
-        self.gripper_target = 0.0
         self.state_machine = "LOWLEVEL_STREAMING"
         response.success = True
         response.message = "RS fake safe-home accepted"
