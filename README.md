@@ -55,7 +55,7 @@ The workspace contains five ROS2 packages:
 - Supports the standard `control_msgs/action/FollowJointTrajectory` interface
 - Supports gripper control: `SetGripper` service, `GripperCommand` action
 - Supports single-joint commands: `JointMitCmd`, `JointPosVelCmd`
-- Supports streaming MIT commands for all arm joints: `/rebotarm/arm/stream/mit` (`ArmMitCmd`); the control loop (500 Hz in the DM SDK config) resends the latest command every cycle until another arrives, and trajectory, IK and low-level commands are rejected while streaming. Publish at the rate the application needs (about 50 Hz for teleoperation): hundreds of messages per second load the Python driver and delay commands
+- Supports streaming MIT commands for all arm joints: `/rebotarm/arm/stream/mit` (`ArmMitCmd`); the control loop (500 Hz in the DM SDK config) resends the latest command every cycle until another arrives, and trajectory, IK and low-level commands are rejected while streaming. Publish at the rate the application needs (about 50 Hz for teleoperation): hundreds of messages per second load the Python driver and delay commands. Guards: a target more than 2 deg from the previous one, or more than 15 deg from the measured position, on any arm joint stops the stream and holds the last accepted target until `enable`, `disable` or `safe_home`; the first target is only checked against the measured position
 
 ---
 

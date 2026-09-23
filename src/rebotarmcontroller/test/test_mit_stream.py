@@ -11,7 +11,11 @@ from rebotarmcontroller.hardware_manager import HardwareManager
 class Group:
     def __init__(self, joint_names=(), lock=None):
         self.sent, self.joint_names, self.lock, self.lock_free = [], list(joint_names), lock, []
+        self.measured = np.zeros(len(self.joint_names))
         self._mit_kp, self._mit_kd = np.array([2.5]), np.array([1.0])
+
+    def get_positions(self, request_feedback=False):
+        return self.measured.copy()
 
     def send_mit(self, pos, vel=None, kp=None, kd=None, tau=None):
         self.sent.append(dict(pos=pos, vel=vel, kp=kp, kd=kd, tau=tau))
@@ -33,6 +37,7 @@ def hw():
     hw = HardwareManager.__new__(HardwareManager)
     hw._cmd_lock = threading.RLock()
     hw._mit_stream = None
+    hw._mit_stream_stopped = False
     hw._state_machine = "IDLE"
     hw._arm_control_mode = "mit"
     hw._enabled, hw._gravity_comp_active, hw._control_output_enabled = True, False, True
@@ -53,8 +58,9 @@ def hw():
     return hw
 
 
-def command(scale=1.):
-    return [np.arange(6.) * scale, np.full(6, .1), np.full(6, 80.), np.full(6, 5.), np.full(6, .2)]
+def command(scale=1., pos=None):
+    pos = np.radians(np.arange(6.) * .1 * scale) if pos is None else np.radians(pos)   # near the measured zeros
+    return [pos, np.full(6, .1), np.full(6, 80.), np.full(6, 5.), np.full(6, .2)]
 
 
 def test_stream_enters_state_once_and_loop_sends_latest_command(hw):
@@ -111,3 +117,38 @@ def test_streaming_blocks_commands_that_would_stop_or_override_it(hw):
         hw._begin_gripper_command()                  # stops the control loop
     hw._begin_gripper_command(allow_endpos=True)      # keeps the loop running: allowed
     assert hw.state_machine == "MIT_STREAMING"
+
+
+def test_step_guard_holds_last_target_until_reset(hw):
+    hw.stream_mit(*command(pos=np.full(6, 1.)))
+    hw.stream_mit(*command(pos=np.full(6, 2.9)))                   # 1.9 deg step: accepted
+    with pytest.raises(RuntimeError, match="target step"):
+        hw.stream_mit(*command(pos=[2.9, 2.9, 5.0, 2.9, 2.9, 2.9]))  # 2.1 deg on one joint
+    with pytest.raises(RuntimeError, match="stopped by a guard"):
+        hw.stream_mit(*command(pos=np.full(6, 2.9)))               # latched: even a small step is refused
+    hw._endpos_loop_cb(None, .002)
+    held = hw._arm_group.sent[-1]
+    np.testing.assert_allclose(held["pos"], np.radians(np.full(6, 2.9)))
+    np.testing.assert_array_equal(held["vel"], np.zeros(6))
+    np.testing.assert_array_equal(held["kp"], np.full(6, 80.))
+    assert hw.state_machine == "MIT_STREAMING"                     # arm goals stay rejected
+    hw.set_state_machine("IDLE")                                   # enable / disable / safe_home reset it
+    assert hw.stream_mit(*command(pos=np.full(6, 2.9))) is True
+
+
+def test_gap_guard_mid_stream_holds_last_target(hw):
+    hw.stream_mit(*command(pos=np.full(6, 1.)))
+    hw._arm_group.measured = np.radians([0., 0., -14.5, 0., 0., 0.])   # arm pushed away
+    with pytest.raises(RuntimeError, match="target-to-measured gap"):
+        hw.stream_mit(*command(pos=np.full(6, 1.)))                 # 15.5 deg from measured on joint3
+    hw._endpos_loop_cb(None, .002)
+    np.testing.assert_allclose(hw._arm_group.sent[-1]["pos"], np.radians(np.full(6, 1.)))
+
+
+def test_first_command_skips_step_guard_but_not_gap_guard(hw):
+    hw._arm_group.measured = np.radians(np.full(6, 10.))
+    assert hw.stream_mit(*command(pos=np.full(6, 10.))) is True     # no previous target to compare with
+    hw.set_state_machine("IDLE")
+    with pytest.raises(RuntimeError, match="stream not started"):
+        hw.stream_mit(*command(pos=np.full(6, 26.)))                # 16 deg from measured
+    assert hw.state_machine == "IDLE" and hw.enable_calls == 1

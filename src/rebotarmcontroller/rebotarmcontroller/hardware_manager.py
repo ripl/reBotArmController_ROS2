@@ -11,6 +11,8 @@ from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 _GRIPPER_CLOSED_POSITION = 0.0
+_MIT_STREAM_MAX_STEP_RAD = np.radians(2.0)   # between consecutive stream targets, any arm joint
+_MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
 
 
 def _locked(method):
@@ -33,6 +35,7 @@ class HardwareManager:
     ) -> None:
         self._cmd_lock = threading.RLock()
         self._mit_stream: dict[str, np.ndarray] | None = None
+        self._mit_stream_stopped = False
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
             model,
@@ -148,6 +151,7 @@ class HardwareManager:
             raise ValueError(f"unsupported state machine value: {state}")
         if state != "MIT_STREAMING":
             self._mit_stream = None
+            self._mit_stream_stopped = False
         self._state_machine = state
 
     # ------------------------------------------------------------------
@@ -386,6 +390,9 @@ class HardwareManager:
         """Store the arm MIT command that the control loop resends every cycle.
 
         The first command enables the arm if needed and enters MIT_STREAMING; returns True then.
+        A target more than 2 deg from the previous one, or more than 15 deg from the measured
+        position, stops the stream: the loop holds the last accepted target and further commands
+        are rejected until MIT_STREAMING is left (enable, disable, safe_home).
         """
         command = {
             name: np.asarray(values, dtype=np.float64)
@@ -396,6 +403,20 @@ class HardwareManager:
                 raise ValueError(f"MIT stream {name} must be {len(self.joint_names)} finite values")
         if self._arm_control_mode != "mit":
             raise RuntimeError(f"MIT stream requires arm_control_mode mit, not {self._arm_control_mode}")
+        if self._mit_stream_stopped:
+            raise RuntimeError("MIT stream stopped by a guard; call enable to reset")
+        previous = self._mit_stream
+        step = np.abs(command["pos"] - previous["pos"]).max() if previous is not None else 0.0
+        gap = np.abs(command["pos"] - self.get_joint_positions()).max()
+        if step > _MIT_STREAM_MAX_STEP_RAD or gap > _MIT_STREAM_MAX_GAP_RAD:
+            reason = (f"MIT stream guard: target step {np.degrees(step):.2f} deg (limit 2), "
+                      f"target-to-measured gap {np.degrees(gap):.2f} deg (limit 15)")
+            if previous is None:
+                raise RuntimeError(reason + "; stream not started")
+            self._mit_stream = dict(previous, vel=np.zeros(len(self.joint_names)))
+            self._mit_stream_stopped = True
+            self._endpos_ctrl._qd_target[:] = 0.0
+            raise RuntimeError(reason + "; holding the last target, call enable to reset")
         started = self._state_machine != "MIT_STREAMING"
         if started:
             self._require_idle("MIT stream")
