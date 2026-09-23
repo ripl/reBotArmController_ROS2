@@ -274,7 +274,7 @@ ros2 action send_goal /rebotarm/move_to_pose rebotarm_msgs/action/MoveToPose \
 `move_to_pose` action 通过 SDK 末端控制器执行。机械臂控制模式由
 `rebotarm_hardware.yaml` 决定：DM 默认 `posvel`，RS 默认 `mit`。
 
-3. 闭合夹爪并回到安全零位：
+3. 机械臂回到安全零位（夹爪保持不动）：
 
 ```bash
 ros2 service call /rebotarm/safe_home std_srvs/srv/Trigger

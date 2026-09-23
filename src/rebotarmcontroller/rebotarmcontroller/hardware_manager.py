@@ -10,7 +10,6 @@ from .conversions import fk_to_pose
 from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
-_GRIPPER_CLOSED_POSITION = 0.0
 # MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds the last accepted target.
 _MIT_STREAM_MAX_STEP_RAD = np.radians(2.0)   # between consecutive stream targets, any arm joint
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
@@ -305,9 +304,7 @@ class HardwareManager:
             self.set_state_machine("SAFE_HOMING")
             self._homing_thread = threading.get_ident()
         try:
-            if self.has_gripper:
-                self.set_gripper_position(_GRIPPER_CLOSED_POSITION)
-            self._endpos_ctrl.safe_home()
+            self._endpos_ctrl.safe_home()   # the gripper is left as it is
         finally:
             self._homing_thread = None
             self.set_state_machine("IDLE")

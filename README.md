@@ -287,7 +287,7 @@ ros2 action send_goal /rebotarm/move_to_pose rebotarm_msgs/action/MoveToPose \
 mode is selected by `rebotarm_hardware.yaml`: DM defaults to `posvel`, RS
 defaults to `mit`.
 
-3. Close the gripper and return to safe home:
+3. Return the arm to safe home (the gripper is left as it is):
 
 ```bash
 ros2 service call /rebotarm/safe_home std_srvs/srv/Trigger
