@@ -11,9 +11,14 @@ from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 _GRIPPER_CLOSED_POSITION = 0.0
+# MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds the last accepted target.
 _MIT_STREAM_MAX_STEP_RAD = np.radians(2.0)   # between consecutive stream targets, any arm joint
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
 _MIT_STREAM_TIMEOUT_S = 0.1                  # longest time without a new stream target
+
+
+class MitStreamRejected(RuntimeError):
+    """A stream command refused in normal operation; the stream subscriber logs these."""
 
 
 def _locked(method):
@@ -405,13 +410,12 @@ class HardwareManager:
         }
         for name, values in command.items():
             if values.shape != (len(self.joint_names),):
-                raise ValueError(f"MIT stream {name} must have {len(self.joint_names)} values")
-        if self._arm_control_mode != "mit":
-            raise RuntimeError(f"MIT stream requires arm_control_mode mit, not {self._arm_control_mode}")
+                raise MitStreamRejected(f"MIT stream {name} must have {len(self.joint_names)} values")
+        # Torque must be on, holding the measured pose, before any stream command (Tianchong approved 2026-09-23 17:13 CDT).
         if not (self._enabled and self.control_loop_active):
-            raise RuntimeError("MIT stream requires the arm to be enabled first (call enable)")
+            raise MitStreamRejected("MIT stream requires the arm to be enabled first (call enable)")
         if self._mit_stream_stopped:
-            raise RuntimeError(f"MIT stream stopped: {self._mit_stream_stop_reason}; call enable to reset")
+            raise MitStreamRejected(f"MIT stream stopped: {self._mit_stream_stop_reason}; call enable to reset")
         previous = self._mit_stream
         step = np.abs(command["pos"] - previous["pos"]).max() if previous is not None else 0.0
         gap = np.abs(command["pos"] - self.get_joint_positions()).max()
@@ -419,12 +423,13 @@ class HardwareManager:
             reason = (f"MIT stream guard: target step {np.degrees(step):.2f} deg (limit 2), "
                       f"target-to-measured gap {np.degrees(gap):.2f} deg (limit 15)")
             if previous is None:
-                raise RuntimeError(reason + "; stream not started")
+                raise MitStreamRejected(reason + "; stream not started")
             self._stop_mit_stream(reason)
-            raise RuntimeError(reason + "; holding the last target, call enable to reset")
+            raise MitStreamRejected(reason + "; holding the last target, call enable to reset")
         started = self._state_machine != "MIT_STREAMING"
+        if started and self._state_machine in ("TRAJ_RUNNING", "GRAVITY_COMP", "SAFE_HOMING"):
+            raise MitStreamRejected(f"rejecting MIT stream in state {self._state_machine}")
         if started:
-            self._require_idle("MIT stream")
             self.set_state_machine("MIT_STREAMING")
         self._mit_stream = command
         self._mit_stream_time = time.monotonic()
@@ -796,17 +801,10 @@ class HardwareManager:
                                       f"{time.monotonic() - self._mit_stream_time:.3f} s (limit 0.1)")
             # Commands are replaced, never mutated, so sending them after release is safe.
             stream = self._mit_stream
-            gripper_target = self._endpos_ctrl._gripper_target if self._endpos_ctrl._has_gripper else None
         finally:
             self._cmd_lock.release()
         # Send without the lock: stream commands must not wait for the ~1 ms CAN send.
         self._arm_group.send_mit(**stream)
-        if gripper_target is not None:  # the same gripper hold the SDK loop sends
-            self._endpos_ctrl._gripper_group.send_mit(
-                np.array([gripper_target]),
-                kp=self._endpos_ctrl._gripper_group._mit_kp,
-                kd=self._endpos_ctrl._gripper_group._mit_kd,
-            )
 
     def _send_endpos_hold_once(self) -> None:
         if self._arm_control_mode == "mit":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from .hardware_manager import MitStreamRejected
 from rebotarm_msgs.msg import (
     ArmMitCmd,
     JointMitCmd,
@@ -100,7 +101,7 @@ class MotorPassthrough:
     def _arm_mit_stream_callback(self, msg) -> None:
         try:
             started = self._hardware.stream_mit(msg.pos, msg.vel, msg.kp, msg.kd, msg.tau)
-        except Exception as exc:
+        except MitStreamRejected as exc:  # refusals are routine; any other error crashes
             self._node.get_logger().warn(f"arm MIT stream command rejected: {exc}")
             return
         if started:
