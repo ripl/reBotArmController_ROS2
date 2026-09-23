@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from rebotarmcontroller.hardware_manager import HardwareManager
+from rebotarmcontroller.hardware_manager import HardwareManager, MitStreamRejected
+from rebotarmcontroller.motor_passthrough import MotorPassthrough
 
 
 class Group:
@@ -69,8 +70,7 @@ def test_stream_enters_state_once_and_loop_sends_latest_command(hw):
         np.testing.assert_array_equal(sent[name], expected)
     assert hw.sdk_loop_calls == 0
     assert hw._arm_group.lock_free == [True]            # the CAN send does not hold the command lock
-    gripper = hw._endpos_ctrl._gripper_group.sent[-1]
-    np.testing.assert_array_equal(gripper["pos"], [.3])
+    assert hw._endpos_ctrl._gripper_group.sent == []       # the gripper is not streamed
 
 
 def test_leaving_stream_holds_last_streamed_pose(hw):
@@ -86,18 +86,14 @@ def test_leaving_stream_holds_last_streamed_pose(hw):
 def test_malformed_command_rejected_without_state_change(hw, bad):
     args = command()
     args[2] = bad
-    with pytest.raises(ValueError):
+    with pytest.raises(MitStreamRejected):
         hw.stream_mit(*args)
     assert hw.state_machine == "IDLE"
 
 
-def test_rejected_outside_mit_mode_and_while_busy(hw):
-    hw._arm_control_mode = "posvel"
-    with pytest.raises(RuntimeError):
-        hw.stream_mit(*command())
-    hw._arm_control_mode = "mit"
+def test_rejected_while_busy(hw):
     hw._state_machine = "TRAJ_RUNNING"
-    with pytest.raises(RuntimeError):
+    with pytest.raises(MitStreamRejected):
         hw.stream_mit(*command())
 
 
@@ -173,3 +169,16 @@ def test_stream_refused_while_torque_is_off(hw):
     with pytest.raises(RuntimeError, match="enabled first"):
         hw.stream_mit(*command())
     assert hw.state_machine == "IDLE" and hw._mit_stream is None
+
+
+def test_subscriber_logs_refusals_but_lets_other_errors_crash(hw):
+    warnings = []
+    node = SimpleNamespace(get_logger=lambda: SimpleNamespace(warn=warnings.append), publish_arm_status=lambda: None)
+    sub = MotorPassthrough.__new__(MotorPassthrough)
+    sub._node, sub._hardware = node, hw
+    msg = SimpleNamespace(pos=list(np.zeros(5)), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6)
+    sub._arm_mit_stream_callback(msg)                            # wrong length: a routine refusal, logged
+    assert len(warnings) == 1 and "must have 6 values" in warnings[0]
+    hw.get_joint_positions = lambda: 1 / 0                       # a bug inside stream_mit
+    with pytest.raises(ZeroDivisionError):
+        sub._arm_mit_stream_callback(SimpleNamespace(**dict(vars(msg), pos=[0.] * 6)))
