@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rebotarm_msgs.msg import (
+    ArmMitCmd,
     JointMitCmd,
     JointPosVelCmd,
 )
@@ -69,6 +70,13 @@ class MotorPassthrough:
                     ),
                     qos,
                 )
+        # Latest command wins: the control loop resends it every cycle.
+        self._subscribe(
+            ArmMitCmd,
+            f"/{namespace}/arm/stream/mit",
+            self._arm_mit_stream_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+        )
         if hardware.has_gripper:
             for msg_type, label, command in gripper_commands:
                 self._subscribe(
@@ -88,6 +96,15 @@ class MotorPassthrough:
                 callback_group=self._node.reentrant_group,
             )
         )
+
+    def _arm_mit_stream_callback(self, msg) -> None:
+        try:
+            started = self._hardware.stream_mit(msg.pos, msg.vel, msg.kp, msg.kd, msg.tau)
+        except Exception as exc:
+            self._node.get_logger().warn(f"arm MIT stream command rejected: {exc}")
+            return
+        if started:
+            self._node.publish_arm_status()
 
     def _make_joint_callback(self, joint_name: str, label: str, command) -> object:
         def _callback(msg) -> None:
