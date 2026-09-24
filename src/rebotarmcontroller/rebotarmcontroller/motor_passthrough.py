@@ -115,6 +115,7 @@ class MotorPassthrough:
 
     def _home_after_guard(self) -> None:
         self._hardware.safe_home(on_started=self._node.publish_arm_status)   # SAFE_HOMING tells the streamer
+        self._hardware.disable()                                           # at rest at home: torque off
         self._node.publish_arm_status()
 
     def _make_joint_callback(self, joint_name: str, label: str, command) -> object:

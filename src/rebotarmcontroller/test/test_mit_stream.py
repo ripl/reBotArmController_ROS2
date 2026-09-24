@@ -212,12 +212,12 @@ def test_subscriber_runs_safe_home_after_a_guard_and_publishes_the_state(hw):
         hw.set_state_machine("SAFE_HOMING")
         on_started()
         hw.set_state_machine("IDLE")
-        done.set()
     hw.safe_home = safe_home
+    hw.disable = lambda: (events.append("disable"), done.set())
     sub = MotorPassthrough.__new__(MotorPassthrough)
     sub._node, sub._hardware = node, hw
     msg = lambda deg: SimpleNamespace(pos=list(np.radians(np.full(6, deg))), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6)
     sub._arm_mit_stream_callback(msg(1.))
     sub._arm_mit_stream_callback(msg(5.))                          # 4 deg step: guard, then safe_home
     assert done.wait(2.)
-    assert events == [("status", "MIT_STREAMING"), "warn", ("status", "SAFE_HOMING"), ("status", "IDLE")]
+    assert events == [("status", "MIT_STREAMING"), "warn", ("status", "SAFE_HOMING"), "disable", ("status", "IDLE")]
