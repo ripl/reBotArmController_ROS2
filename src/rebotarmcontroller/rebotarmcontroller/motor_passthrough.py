@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import threading
+
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from .hardware_manager import MitStreamRejected
+from .hardware_manager import MitStreamGuardTripped, MitStreamRejected
 from rebotarm_msgs.msg import (
     ArmMitCmd,
     JointMitCmd,
@@ -101,11 +103,19 @@ class MotorPassthrough:
     def _arm_mit_stream_callback(self, msg) -> None:
         try:
             started = self._hardware.stream_mit(msg.pos, msg.vel, msg.kp, msg.kd, msg.tau)
+        except MitStreamGuardTripped as exc:
+            self._node.get_logger().warn(f"arm MIT stream command rejected: {exc}")
+            threading.Thread(target=self._home_after_guard, daemon=True).start()
+            return
         except MitStreamRejected as exc:  # refusals are routine; any other error crashes
             self._node.get_logger().warn(f"arm MIT stream command rejected: {exc}")
             return
         if started:
             self._node.publish_arm_status()
+
+    def _home_after_guard(self) -> None:
+        self._hardware.safe_home(on_started=self._node.publish_arm_status)   # SAFE_HOMING tells the streamer
+        self._node.publish_arm_status()
 
     def _make_joint_callback(self, joint_name: str, label: str, command) -> object:
         def _callback(msg) -> None:
