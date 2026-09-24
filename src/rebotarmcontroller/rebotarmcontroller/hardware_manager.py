@@ -11,7 +11,8 @@ from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 # MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds the last accepted target.
-# The step and gap guards then run safe_home, with the step limit at 3 deg (Tianchong approved 2026-09-23 20:19 CDT).
+# The step and gap guards then run safe_home, with the step limit at 3 deg (Tianchong approved 2026-09-23 20:19 CDT),
+# and then disable (Tianchong asked 2026-09-23 20:57 CDT).
 _MIT_STREAM_MAX_STEP_RAD = np.radians(3.0)   # between consecutive stream targets, any arm joint
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
 _MIT_STREAM_TIMEOUT_S = 0.1                  # longest time without a new stream target
@@ -436,8 +437,8 @@ class HardwareManager:
         A target more than 3 deg from the previous one, or more than 15 deg from the measured
         position, or no new target for 100 ms, stops the stream: the loop holds the last accepted
         target and further commands are rejected until MIT_STREAMING is left (enable, disable,
-        safe_home). After a step or gap guard, the subscriber runs safe_home and commands stay
-        rejected until enable or disable, so the stream cannot pull the arm back out of home.
+        safe_home). After a step or gap guard, the subscriber runs safe_home and then disable, and
+        commands are rejected until the next enable.
         """
         command = {
             name: np.asarray(values, dtype=np.float64)
