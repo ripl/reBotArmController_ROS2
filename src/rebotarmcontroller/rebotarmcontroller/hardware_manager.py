@@ -11,13 +11,18 @@ from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 # MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds the last accepted target.
-_MIT_STREAM_MAX_STEP_RAD = np.radians(2.0)   # between consecutive stream targets, any arm joint
+# The step and gap guards then run safe_home, with the step limit at 3 deg (Tianchong approved 2026-09-23 20:19 CDT).
+_MIT_STREAM_MAX_STEP_RAD = np.radians(3.0)   # between consecutive stream targets, any arm joint
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
 _MIT_STREAM_TIMEOUT_S = 0.1                  # longest time without a new stream target
 
 
 class MitStreamRejected(RuntimeError):
     """A stream command refused in normal operation; the stream subscriber logs these."""
+
+
+class MitStreamGuardTripped(MitStreamRejected):
+    """A step or gap guard stopped the stream; the stream subscriber then runs safe_home."""
 
 
 def _locked(method):
@@ -42,6 +47,7 @@ class HardwareManager:
         self._mit_stream: dict[str, np.ndarray] | None = None
         self._mit_stream_stopped = False
         self._mit_stream_stop_reason = ""
+        self._mit_stream_guard_reason = ""   # set by a step or gap guard; cleared by enable or disable
         self._mit_stream_time = 0.0
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
@@ -263,6 +269,7 @@ class HardwareManager:
 
     def enable(self) -> None:
         self.start_endpos_control()
+        self._mit_stream_guard_reason = ""
 
     @_locked
     def disable(self) -> None:
@@ -274,9 +281,11 @@ class HardwareManager:
         self._robot.stop_control_loop()
         self._robot.disable_all()
         self._enabled = False
+        self._mit_stream_guard_reason = ""
         self.set_state_machine("IDLE")
 
-    def safe_home(self) -> None:
+    def safe_home(self, on_started=lambda: None) -> None:
+        """Home the arm; on_started runs once the state is SAFE_HOMING, before the arm moves."""
         with self._cmd_lock:
             self.stop_motion()
             self.set_state_machine("IDLE")
@@ -303,6 +312,7 @@ class HardwareManager:
                 self.start_endpos_control()
             self.set_state_machine("SAFE_HOMING")
             self._homing_thread = threading.get_ident()
+        on_started()
         try:
             self._home_arm()   # the gripper is left as it is
         finally:
@@ -423,10 +433,11 @@ class HardwareManager:
         """Store the arm MIT command that the control loop resends every cycle.
 
         The arm must already be enabled; the first command enters MIT_STREAMING and returns True.
-        A target more than 2 deg from the previous one, or more than 15 deg from the measured
+        A target more than 3 deg from the previous one, or more than 15 deg from the measured
         position, or no new target for 100 ms, stops the stream: the loop holds the last accepted
         target and further commands are rejected until MIT_STREAMING is left (enable, disable,
-        safe_home).
+        safe_home). After a step or gap guard, the subscriber runs safe_home and commands stay
+        rejected until enable or disable, so the stream cannot pull the arm back out of home.
         """
         command = {
             name: np.asarray(values, dtype=np.float64)
@@ -438,18 +449,22 @@ class HardwareManager:
         # Torque must be on, holding the measured pose, before any stream command (Tianchong approved 2026-09-23 17:13 CDT).
         if not (self._enabled and self.control_loop_active):
             raise MitStreamRejected("MIT stream requires the arm to be enabled first (call enable)")
+        if self._mit_stream_guard_reason:
+            raise MitStreamRejected(f"MIT stream stopped: {self._mit_stream_guard_reason}; call enable to reset")
         if self._mit_stream_stopped:
             raise MitStreamRejected(f"MIT stream stopped: {self._mit_stream_stop_reason}; call enable to reset")
         previous = self._mit_stream
         step = np.abs(command["pos"] - previous["pos"]).max() if previous is not None else 0.0
         gap = np.abs(command["pos"] - self.get_joint_positions()).max()
         if step > _MIT_STREAM_MAX_STEP_RAD or gap > _MIT_STREAM_MAX_GAP_RAD:
-            reason = (f"MIT stream guard: target step {np.degrees(step):.2f} deg (limit 2), "
+            reason = (f"MIT stream guard: target step {np.degrees(step):.2f} deg "
+                      f"(limit {np.degrees(_MIT_STREAM_MAX_STEP_RAD):.0f}), "
                       f"target-to-measured gap {np.degrees(gap):.2f} deg (limit 15)")
             if previous is None:
                 raise MitStreamRejected(reason + "; stream not started")
             self._stop_mit_stream(reason)
-            raise MitStreamRejected(reason + "; holding the last target, call enable to reset")
+            self._mit_stream_guard_reason = reason
+            raise MitStreamGuardTripped(reason + "; returning home, stream refused until enable")
         started = self._state_machine != "MIT_STREAMING"
         if started and self._state_machine in ("TRAJ_RUNNING", "GRAVITY_COMP", "SAFE_HOMING"):
             raise MitStreamRejected(f"rejecting MIT stream in state {self._state_machine}")

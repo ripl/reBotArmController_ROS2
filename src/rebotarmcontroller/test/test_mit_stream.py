@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from rebotarmcontroller.hardware_manager import HardwareManager, MitStreamRejected
+from rebotarmcontroller.hardware_manager import HardwareManager, MitStreamGuardTripped, MitStreamRejected
 from rebotarmcontroller.motor_passthrough import MotorPassthrough
 
 
@@ -40,6 +40,7 @@ def hw():
     hw._mit_stream = None
     hw._mit_stream_stopped = False
     hw._mit_stream_stop_reason = ""
+    hw._mit_stream_guard_reason = ""
     hw._mit_stream_time = 0.0
     hw._state_machine = "IDLE"
     hw._arm_control_mode = "mit"
@@ -110,27 +111,27 @@ def test_streaming_blocks_commands_that_would_stop_or_override_it(hw):
     assert hw.state_machine == "MIT_STREAMING"
 
 
-def test_step_guard_holds_last_target_until_reset(hw):
+def test_step_guard_holds_last_target_and_refuses_the_stream_until_enable(hw):
     hw.stream_mit(*command(pos=np.full(6, 1.)))
-    hw.stream_mit(*command(pos=np.full(6, 2.9)))                   # 1.9 deg step: accepted
-    with pytest.raises(RuntimeError, match="target step"):
-        hw.stream_mit(*command(pos=[2.9, 2.9, 5.0, 2.9, 2.9, 2.9]))  # 2.1 deg on one joint
-    with pytest.raises(RuntimeError, match="stopped: MIT stream guard: target step"):
-        hw.stream_mit(*command(pos=np.full(6, 2.9)))               # latched: even a small step is refused
+    hw.stream_mit(*command(pos=np.full(6, 3.9)))                   # 2.9 deg step: accepted
+    with pytest.raises(MitStreamGuardTripped, match="target step 3.10 deg \\(limit 3\\)"):
+        hw.stream_mit(*command(pos=[3.9, 3.9, 7.0, 3.9, 3.9, 3.9]))  # 3.1 deg on one joint
     hw._endpos_loop_cb(None, .002)
     held = hw._arm_group.sent[-1]
-    np.testing.assert_allclose(held["pos"], np.radians(np.full(6, 2.9)))
+    np.testing.assert_allclose(held["pos"], np.radians(np.full(6, 3.9)))
     np.testing.assert_array_equal(held["vel"], np.zeros(6))
     np.testing.assert_array_equal(held["kp"], np.full(6, 80.))
-    assert hw.state_machine == "MIT_STREAMING"                     # arm goals stay rejected
-    hw.set_state_machine("IDLE")                                   # enable / disable / safe_home reset it
-    assert hw.stream_mit(*command(pos=np.full(6, 2.9))) is True
+    hw.set_state_machine("IDLE")                                   # safe_home has finished
+    with pytest.raises(MitStreamRejected, match="stopped: MIT stream guard: target step"):
+        hw.stream_mit(*command(pos=np.full(6, 3.9)))               # still refused: no pulling out of home
+    hw.enable()
+    assert hw.stream_mit(*command(pos=np.full(6, 3.9))) is True
 
 
 def test_gap_guard_mid_stream_holds_last_target(hw):
     hw.stream_mit(*command(pos=np.full(6, 1.)))
     hw._arm_group.measured = np.radians([0., 0., -14.5, 0., 0., 0.])   # arm pushed away
-    with pytest.raises(RuntimeError, match="target-to-measured gap"):
+    with pytest.raises(MitStreamGuardTripped, match="target-to-measured gap"):
         hw.stream_mit(*command(pos=np.full(6, 1.)))                 # 15.5 deg from measured on joint3
     hw._endpos_loop_cb(None, .002)
     np.testing.assert_allclose(hw._arm_group.sent[-1]["pos"], np.radians(np.full(6, 1.)))
@@ -200,3 +201,23 @@ def test_safe_home_starts_from_the_held_target_not_the_sagged_measurement(hw, mo
     np.testing.assert_array_equal(hw._endpos_ctrl._q_target, np.zeros(6))
     np.testing.assert_array_equal(hw._endpos_ctrl._qd_target, np.zeros(6))
     assert np.abs(np.diff(targets, axis=0)).max() < np.radians(1.)     # smooth: no jump anywhere
+
+
+def test_subscriber_runs_safe_home_after_a_guard_and_publishes_the_state(hw):
+    events, done = [], threading.Event()
+    node = SimpleNamespace(get_logger=lambda: SimpleNamespace(warn=lambda m: events.append("warn")),
+                           publish_arm_status=lambda: events.append(("status", hw.state_machine)))
+
+    def safe_home(on_started):
+        hw.set_state_machine("SAFE_HOMING")
+        on_started()
+        hw.set_state_machine("IDLE")
+        done.set()
+    hw.safe_home = safe_home
+    sub = MotorPassthrough.__new__(MotorPassthrough)
+    sub._node, sub._hardware = node, hw
+    msg = lambda deg: SimpleNamespace(pos=list(np.radians(np.full(6, deg))), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6)
+    sub._arm_mit_stream_callback(msg(1.))
+    sub._arm_mit_stream_callback(msg(5.))                          # 4 deg step: guard, then safe_home
+    assert done.wait(2.)
+    assert events == [("status", "MIT_STREAMING"), "warn", ("status", "SAFE_HOMING"), ("status", "IDLE")]
