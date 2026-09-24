@@ -304,10 +304,37 @@ class HardwareManager:
             self.set_state_machine("SAFE_HOMING")
             self._homing_thread = threading.get_ident()
         try:
-            self._endpos_ctrl.safe_home()   # the gripper is left as it is
+            self._home_arm()   # the gripper is left as it is
         finally:
             self._homing_thread = None
             self.set_state_machine("IDLE")
+
+    def _home_arm(self, max_vel: float = 0.5, send_freq: float = 50.0, settle_thresh: float = 0.01) -> None:
+        """The SDK's safe_home trajectory (minimum jerk to all-zero joints), started from the held target.
+
+        The SDK starts from the measured pose, which sags below the target under gravity: that lowered the
+        target by the sag and dropped the arm when homing began (about 5 deg on joint4 after teleop).
+        """
+        ctrl = self._endpos_ctrl
+        q_start = ctrl._q_target.copy()
+        max_err = float(np.max(np.abs(q_start)))
+        if max_err < 0.01:
+            return
+        t_total = 2.0 * max_err / max_vel
+        num_steps = max(2, int(t_total * send_freq))
+        s = np.linspace(0.0, 1.0, num_steps)[:, None]
+        trajectory = q_start * (1.0 - (10.0 * s**3 - 15.0 * s**4 + 6.0 * s**5))
+        ctrl._qd_target[:] = 0.0   # a stream stopped within its 100 ms watchdog leaves its last velocity here
+        ctrl._vlim_override = np.full(len(q_start), max_vel)
+        for q in trajectory:
+            ctrl._q_target[:] = q
+            time.sleep(t_total / num_steps)
+        ctrl._q_target[:] = 0.0
+        settle_deadline = time.monotonic() + 3.0
+        while (time.monotonic() < settle_deadline
+               and np.max(np.abs(self._arm_group.get_positions(request_feedback=False))) >= settle_thresh):
+            time.sleep(0.002)
+        ctrl._vlim_override = None
 
     @_locked
     def set_zero(self, joint_name: str = "") -> bool:

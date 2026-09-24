@@ -182,3 +182,21 @@ def test_subscriber_logs_refusals_but_lets_other_errors_crash(hw):
     hw.get_joint_positions = lambda: 1 / 0                       # a bug inside stream_mit
     with pytest.raises(ZeroDivisionError):
         sub._arm_mit_stream_callback(SimpleNamespace(**dict(vars(msg), pos=[0.] * 6)))
+
+
+def test_safe_home_starts_from_the_held_target_not_the_sagged_measurement(hw, monkeypatch):
+    held = np.radians([10., -30., -20., -15., 5., 0.])
+    hw._endpos_ctrl._q_target[:] = held
+    hw._endpos_ctrl._qd_target[:] = .3                                  # left by a stream stopped mid-motion
+    hw._arm_group.measured = held + np.radians([0., 2., 4., 6., 0., 0.])   # sagged under gravity
+    targets = []
+
+    def sleep(_):                                                         # the arm then tracks each target
+        targets.append(hw._endpos_ctrl._q_target.copy())
+        hw._arm_group.measured = targets[-1]
+    monkeypatch.setattr("rebotarmcontroller.hardware_manager.time.sleep", sleep)
+    hw._home_arm()
+    np.testing.assert_array_equal(targets[0], held)
+    np.testing.assert_array_equal(hw._endpos_ctrl._q_target, np.zeros(6))
+    np.testing.assert_array_equal(hw._endpos_ctrl._qd_target, np.zeros(6))
+    assert np.abs(np.diff(targets, axis=0)).max() < np.radians(1.)     # smooth: no jump anywhere
