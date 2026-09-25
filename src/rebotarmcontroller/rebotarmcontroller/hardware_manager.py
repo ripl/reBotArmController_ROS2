@@ -13,7 +13,9 @@ _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
 # MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds the last accepted target.
 # The step and gap guards then run safe_home, with the step limit at 3 deg (Tianchong approved 2026-09-23 20:19 CDT),
 # and then disable (Tianchong asked 2026-09-23 20:57 CDT).
-_MIT_STREAM_MAX_STEP_RAD = np.radians(3.0)   # between consecutive stream targets, any arm joint
+# Between consecutive stream targets, per joint. The wrist (joints 4-6) gets more: near joint 5 = 0, where joints 4
+# and 6 line up, an ordinary teleop wrist turn needs joint 4 above 3 deg per 50 Hz command (Tianchong, 2026-09-24).
+_MIT_STREAM_MAX_STEP_RAD = np.radians([3., 3., 3., 5., 5., 5.])
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
 _MIT_STREAM_TIMEOUT_S = 0.1                  # longest time without a new stream target
 
@@ -455,11 +457,12 @@ class HardwareManager:
         if self._mit_stream_stopped:
             raise MitStreamRejected(f"MIT stream stopped: {self._mit_stream_stop_reason}; call enable to reset")
         previous = self._mit_stream
-        step = np.abs(command["pos"] - previous["pos"]).max() if previous is not None else 0.0
+        steps = np.abs(command["pos"] - previous["pos"]) if previous is not None else np.zeros(len(self.joint_names))
+        joint = int(np.argmax(steps / _MIT_STREAM_MAX_STEP_RAD))   # the joint nearest (or furthest over) its limit
         gap = np.abs(command["pos"] - self.get_joint_positions()).max()
-        if step > _MIT_STREAM_MAX_STEP_RAD or gap > _MIT_STREAM_MAX_GAP_RAD:
-            reason = (f"MIT stream guard: target step {np.degrees(step):.2f} deg "
-                      f"(limit {np.degrees(_MIT_STREAM_MAX_STEP_RAD):.0f}), "
+        if steps[joint] > _MIT_STREAM_MAX_STEP_RAD[joint] or gap > _MIT_STREAM_MAX_GAP_RAD:
+            reason = (f"MIT stream guard: target step {np.degrees(steps[joint]):.2f} deg "
+                      f"(limit {np.degrees(_MIT_STREAM_MAX_STEP_RAD[joint]):.0f}) on joint{joint + 1}, "
                       f"target-to-measured gap {np.degrees(gap):.2f} deg (limit 15)")
             if previous is None:
                 raise MitStreamRejected(reason + "; stream not started")
