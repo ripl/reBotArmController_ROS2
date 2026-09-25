@@ -137,6 +137,13 @@ def test_gap_guard_mid_stream_holds_last_target(hw):
     np.testing.assert_allclose(hw._arm_group.sent[-1]["pos"], np.radians(np.full(6, 1.)))
 
 
+def test_wrist_joints_may_step_5_deg(hw):
+    hw.stream_mit(*command(pos=np.full(6, 1.)))
+    hw.stream_mit(*command(pos=[1., 1., 1., 5.9, 5.9, 5.9]))           # 4.9 deg on joints 4-6: accepted
+    with pytest.raises(MitStreamGuardTripped, match="target step 5.10 deg \\(limit 5\\) on joint4"):
+        hw.stream_mit(*command(pos=[1., 1., 1., 11., 5.9, 5.9]))
+
+
 def test_first_command_skips_step_guard_but_not_gap_guard(hw):
     hw._arm_group.measured = np.radians(np.full(6, 10.))
     assert hw.stream_mit(*command(pos=np.full(6, 10.))) is True     # no previous target to compare with
