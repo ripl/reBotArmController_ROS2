@@ -228,7 +228,7 @@ class HardwareManager:
         return pos[:n], vel[:n], torq[:n]
 
     def get_joint_positions(self, request: bool = False) -> np.ndarray:
-        return self._arm_group.get_positions(request_feedback=request)
+        return self._get_arm_state(request_feedback=request)[0]
 
     def get_joint_velocities(self, request: bool = False) -> np.ndarray:
         return self._arm_group.get_velocities(request_feedback=request)
@@ -297,7 +297,7 @@ class HardwareManager:
                     hold_target = (
                         self._gravity_comp_q_last.copy()
                         if self._gravity_comp_q_last is not None
-                        else self._arm_group.get_positions(request_feedback=False).copy()
+                        else self.get_joint_positions().copy()
                     )
                     self._arm_group._mit_kp = self._arm_mit_kp.copy()
                     self._arm_group._mit_kd = self._arm_mit_kd.copy()
@@ -345,7 +345,7 @@ class HardwareManager:
         ctrl._q_target[:] = 0.0
         settle_deadline = time.monotonic() + 3.0
         while (time.monotonic() < settle_deadline
-               and np.max(np.abs(self._arm_group.get_positions(request_feedback=False))) >= settle_thresh):
+               and np.max(np.abs(self.get_joint_positions())) >= settle_thresh):
             time.sleep(0.002)
         ctrl._vlim_override = None
 
@@ -595,7 +595,7 @@ class HardwareManager:
         request: bool = False,
         reference: np.ndarray | None = None,
     ) -> np.ndarray:
-        q = self._arm_group.get_positions(request_feedback=request)
+        q = self.get_joint_positions(request=request)
         ref = reference if reference is not None else self._gravity_comp_q_last
         if ref is not None:
             q = self._angles_near_reference(q, ref)
@@ -632,7 +632,7 @@ class HardwareManager:
         )
         if self.has_gripper:
             self._gripper_group.send_mit(
-                self._gripper_group.get_positions()
+                [self._robot._motor_map[self._gripper_name].get_state().pos]
             )
 
     # ------------------------------------------------------------------
