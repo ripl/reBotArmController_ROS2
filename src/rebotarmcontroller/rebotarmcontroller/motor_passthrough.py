@@ -102,7 +102,8 @@ class MotorPassthrough:
 
     def _arm_mit_stream_callback(self, msg) -> None:
         try:
-            started = self._hardware.stream_mit(msg.pos, msg.vel, msg.kp, msg.kd, msg.tau)
+            started = self._hardware.stream_mit(msg.pos, msg.vel, msg.kp, msg.kd, msg.tau,
+                                                msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec)
         except MitStreamGuardTripped as exc:
             self._node.get_logger().warn(f"arm MIT stream command rejected: {exc}")
             threading.Thread(target=self._home_after_guard, daemon=True).start()
