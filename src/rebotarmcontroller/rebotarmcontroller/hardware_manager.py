@@ -10,14 +10,14 @@ from .conversions import fk_to_pose
 from .hardware_config import resolve_hardware_config
 
 _GRIPPER_GOAL_TOLERANCE_RAD = 0.12
-# MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds the last accepted target.
+# MIT stream guards (Tianchong approved 2026-09-23 17:13 CDT): each stops the stream and holds where it is.
 # The step and gap guards then run safe_home, with the step limit at 3 deg (Tianchong approved 2026-09-23 20:19 CDT),
 # and then disable (Tianchong asked 2026-09-23 20:57 CDT).
 # Between consecutive stream targets, per joint. The wrist (joints 4-6) gets more: near joint 5 = 0, where joints 4
 # and 6 line up, an ordinary teleop wrist turn needs joint 4 above 3 deg per 50 Hz command (Tianchong, 2026-09-24).
 _MIT_STREAM_MAX_STEP_RAD = np.radians([3., 3., 3., 5., 5., 5.])
 _MIT_STREAM_MAX_GAP_RAD = np.radians(15.0)   # between a stream target and the measured position
-_MIT_STREAM_TIMEOUT_S = 0.1                  # longest time without a new stream target
+_MIT_STREAM_TIMEOUT_S = 0.1                  # longest time past a stream target's reach time without a new one
 
 
 class MitStreamRejected(RuntimeError):
@@ -51,7 +51,7 @@ class HardwareManager:
         self._mit_stream_stopped = False
         self._mit_stream_stop_reason = ""
         self._mit_stream_guard_reason = ""   # set by a step or gap guard; cleared by enable or disable
-        self._mit_stream_time = 0.0
+        self._mit_stream_ramp = None   # (start position, start time, reach time), monotonic seconds
         hardware_config_path, hardware_data = resolve_hardware_config(
             hardware_config,
             model,
@@ -432,13 +432,14 @@ class HardwareManager:
             raise RuntimeError(f"rejecting {what} in state {state}")
 
     @_locked
-    def stream_mit(self, pos, vel, kp, kd, tau) -> bool:
-        """Store the arm MIT command that the control loop resends every cycle.
+    def stream_mit(self, pos, vel, kp, kd, tau, reach_ns) -> bool:
+        """Store the arm MIT command the control loop sends every cycle, with pos linear in time from the last
+        position sent to pos at reach_ns (system clock), and pos after.
 
         The arm must already be enabled; the first command enters MIT_STREAMING and returns True.
         A target more than 3 deg from the previous one, or more than 15 deg from the measured
-        position, or no new target for 100 ms, stops the stream: the loop holds the last accepted
-        target and further commands are rejected until MIT_STREAMING is left (enable, disable,
+        position, or no new target by 100 ms past the last one's reach time, stops the stream: the loop
+        holds where it is and further commands are rejected until MIT_STREAMING is left (enable, disable,
         safe_home). After a step or gap guard, the subscriber runs safe_home and then disable, and
         commands are rejected until the next enable.
         """
@@ -475,18 +476,26 @@ class HardwareManager:
         if started:
             self.set_state_machine("MIT_STREAMING")
         self._mit_stream = command
-        self._mit_stream_time = time.monotonic()
-        # Keep the normal target on the stream, so leaving MIT_STREAMING holds the last pose.
-        self._endpos_ctrl._q_target[:] = command["pos"]
+        now = time.monotonic()
+        self._mit_stream_ramp = (self._endpos_ctrl._q_target.copy(), now, now + (reach_ns - time.time_ns()) / 1e9)
+        # Keep the normal target on the stream, so leaving MIT_STREAMING holds where it is.
+        self._endpos_ctrl._q_target[:] = self._mit_stream_position(now)
         self._endpos_ctrl._qd_target[:] = command["vel"]
         return started
 
     def _stop_mit_stream(self, reason: str) -> None:
-        """Hold the last accepted stream target; called under the command lock."""
+        """Hold where the stream is; called under the command lock."""
         self._mit_stream_stop_reason = reason
-        self._mit_stream = dict(self._mit_stream, vel=np.zeros(len(self.joint_names)))
+        held = self._mit_stream_position(time.monotonic())
+        self._mit_stream = dict(self._mit_stream, pos=held, vel=np.zeros(len(self.joint_names)))
+        self._mit_stream_ramp = (held, 0., 0.)
         self._mit_stream_stopped = True
         self._endpos_ctrl._qd_target[:] = 0.0
+
+    def _mit_stream_position(self, now: float) -> np.ndarray:
+        start, begin, reach = self._mit_stream_ramp
+        target = self._mit_stream["pos"]
+        return target if now >= reach else start + (now - begin) / (reach - begin) * (target - start)
 
     @_locked
     def begin_trajectory_stream(self) -> None:
@@ -839,11 +848,13 @@ class HardwareManager:
             if self._mit_stream is None:
                 self._endpos_ctrl._loop_cb(robot, 0.0)
                 return
-            if not self._mit_stream_stopped and time.monotonic() - self._mit_stream_time > _MIT_STREAM_TIMEOUT_S:
-                self._stop_mit_stream(f"MIT stream guard: no new target for "
-                                      f"{time.monotonic() - self._mit_stream_time:.3f} s (limit 0.1)")
+            now = time.monotonic()
+            if not self._mit_stream_stopped and now - self._mit_stream_ramp[2] > _MIT_STREAM_TIMEOUT_S:
+                self._stop_mit_stream(f"MIT stream guard: no new target {now - self._mit_stream_ramp[2]:.3f} s "
+                                      f"past the last one's reach time (limit 0.1)")
             # Commands are replaced, never mutated, so sending them after release is safe.
-            stream = self._mit_stream
+            stream = dict(self._mit_stream, pos=self._mit_stream_position(now))
+            self._endpos_ctrl._q_target[:] = stream["pos"]
         finally:
             self._cmd_lock.release()
         # Send without the lock: stream commands must not wait for the ~1 ms CAN send.

@@ -1,5 +1,6 @@
 """MIT streaming state and control-loop output, with recording fakes instead of hardware."""
 import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -41,12 +42,13 @@ def hw():
     hw._mit_stream_stopped = False
     hw._mit_stream_stop_reason = ""
     hw._mit_stream_guard_reason = ""
-    hw._mit_stream_time = 0.0
+    hw._mit_stream_ramp = None
     hw._state_machine = "IDLE"
     hw._arm_control_mode = "mit"
     hw._enabled, hw._gravity_comp_active, hw._control_output_enabled = True, False, True
     hw._arm_group = Group((f"joint{i}" for i in range(1, 7)), lock=hw._cmd_lock)
     hw._robot = SimpleNamespace(stop_control_loop=lambda: None, control_loop_active=True, has_gripper=True)
+    hw._robot_get_state = lambda request_feedback: (hw._arm_group.measured.copy(), np.zeros(6), np.zeros(6))
     hw.sdk_loop_calls = 0
 
     def sdk_loop(robot, dt):
@@ -58,7 +60,7 @@ def hw():
 
 def command(scale=1., pos=None):
     pos = np.radians(np.arange(6.) * .1 * scale) if pos is None else np.radians(pos)   # near the measured zeros
-    return [pos, np.full(6, .1), np.full(6, 80.), np.full(6, 5.), np.full(6, .2)]
+    return [pos, np.full(6, .1), np.full(6, 80.), np.full(6, 5.), np.full(6, .2), time.time_ns()]   # reach now
 
 
 def test_stream_enters_state_once_and_loop_sends_latest_command(hw):
@@ -158,7 +160,8 @@ def test_watchdog_holds_last_target_after_100_ms_without_a_command(hw):
     hw._endpos_loop_cb(None, .002)                                 # fresh command: still streaming
     assert not hw._mit_stream_stopped
     np.testing.assert_array_equal(hw._arm_group.sent[-1]["vel"], np.full(6, .1))
-    hw._mit_stream_time -= .2                                      # 200 ms without a new command
+    start, begin, reach = hw._mit_stream_ramp
+    hw._mit_stream_ramp = (start, begin - .2, reach - .2)              # 200 ms past its reach time
     hw._endpos_loop_cb(None, .002)
     held = hw._arm_group.sent[-1]
     np.testing.assert_allclose(held["pos"], np.radians(np.full(6, 1.)))
@@ -167,6 +170,19 @@ def test_watchdog_holds_last_target_after_100_ms_without_a_command(hw):
         hw.stream_mit(*command(pos=np.full(6, 1.)))
     hw.set_state_machine("IDLE")
     assert hw.stream_mit(*command(pos=np.full(6, 1.))) is True
+
+
+def test_loop_ramps_linearly_from_the_last_sent_position_to_reach_the_target_on_time(hw):
+    hw.stream_mit(*command(pos=np.zeros(6)))
+    hw.stream_mit(*command(pos=np.full(6, 2.))[:5], time.time_ns() + 100_000_000)
+    start, begin, reach = hw._mit_stream_ramp
+    assert abs(reach - begin - .1) < 1e-3
+    np.testing.assert_array_equal(hw._endpos_ctrl._q_target, np.zeros(6))   # nothing moves on arrival
+    np.testing.assert_allclose(hw._mit_stream_position((begin + reach) / 2), np.radians(np.full(6, 1.)))
+    np.testing.assert_array_equal(hw._mit_stream_position(reach), np.radians(np.full(6, 2.)))
+    hw._endpos_ctrl._q_target[:] = hw._mit_stream_position((begin + reach) / 2)    # a tick halfway
+    hw.stream_mit(*command(pos=np.full(6, 3.))[:5], time.time_ns() + 100_000_000)
+    np.testing.assert_allclose(hw._mit_stream_ramp[0], np.radians(np.full(6, 1.)))   # starts from there
 
 
 def test_stream_refused_while_torque_is_off(hw):
@@ -184,7 +200,8 @@ def test_subscriber_logs_refusals_but_lets_other_errors_crash(hw):
     node = SimpleNamespace(get_logger=lambda: SimpleNamespace(warn=warnings.append), publish_arm_status=lambda: None)
     sub = MotorPassthrough.__new__(MotorPassthrough)
     sub._node, sub._hardware = node, hw
-    msg = SimpleNamespace(pos=list(np.zeros(5)), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6)
+    msg = SimpleNamespace(pos=list(np.zeros(5)), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6,
+                          header=SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=0)))
     sub._arm_mit_stream_callback(msg)                            # wrong length: a routine refusal, logged
     assert len(warnings) == 1 and "must have 6 values" in warnings[0]
     hw.get_joint_positions = lambda: 1 / 0                       # a bug inside stream_mit
@@ -223,7 +240,8 @@ def test_subscriber_runs_safe_home_after_a_guard_and_publishes_the_state(hw):
     hw.disable = lambda: (events.append("disable"), done.set())
     sub = MotorPassthrough.__new__(MotorPassthrough)
     sub._node, sub._hardware = node, hw
-    msg = lambda deg: SimpleNamespace(pos=list(np.radians(np.full(6, deg))), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6)
+    msg = lambda deg: SimpleNamespace(pos=list(np.radians(np.full(6, deg))), vel=[0.] * 6, kp=[80.] * 6, kd=[5.] * 6, tau=[0.] * 6,
+                                      header=SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=0)))
     sub._arm_mit_stream_callback(msg(1.))
     sub._arm_mit_stream_callback(msg(5.))                          # 4 deg step: guard, then safe_home
     assert done.wait(2.)
