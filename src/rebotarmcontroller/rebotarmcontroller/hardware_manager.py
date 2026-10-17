@@ -478,8 +478,6 @@ class HardwareManager:
         self._mit_stream = command
         now = time.monotonic()
         self._mit_stream_ramp = (self._endpos_ctrl._q_target.copy(), now, now + (reach_ns - time.time_ns()) / 1e9)
-        # Keep the normal target on the stream, so leaving MIT_STREAMING holds where it is.
-        self._endpos_ctrl._q_target[:] = self._mit_stream_position(now)
         self._endpos_ctrl._qd_target[:] = command["vel"]
         return started
 
